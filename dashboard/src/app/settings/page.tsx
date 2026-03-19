@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Eye, EyeOff, KeyRound, Save, Search, Server, Shield, MessageSquare, AtSign, Globe, Loader2, CheckCircle2, ChevronDown, Cpu } from 'lucide-react';
+import { Eye, EyeOff, KeyRound, Save, Search, Server, Shield, MessageSquare, AtSign, Globe, Loader2, CheckCircle2, ChevronDown, Cpu, BookOpen } from 'lucide-react';
+import Link from 'next/link';
 import api from '@/lib/api';
 
 interface SettingsData {
@@ -161,20 +162,29 @@ export default function SettingsPage() {
   return (
     <div className="max-w-5xl mx-auto p-6 pt-10 pb-20 space-y-8">
       {/* Header */}
-      <div>
-        <div className="flex items-center gap-3 mb-2">
-          <div className="w-10 h-10 bg-primary flex items-center justify-center">
-            <Shield className="w-5 h-5 text-white" />
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-3 mb-2">
+            <div className="w-10 h-10 bg-primary flex items-center justify-center">
+              <Shield className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <h1 className="font-black text-xl uppercase tracking-tighter italic">
+                Settings <span className="text-primary italic">&amp; BYOK</span>
+              </h1>
+            </div>
           </div>
-          <div>
-            <h1 className="font-black text-xl uppercase tracking-tighter italic">
-              Settings <span className="text-primary italic">&amp; BYOK</span>
-            </h1>
-          </div>
+          <p className="text-sm text-foreground/50 mt-2 max-w-2xl">
+            Gerencie as integrações do Lumi Plus. As chaves são criptografadas com <strong className="text-foreground/70">AES-256-GCM</strong> antes de serem armazenadas no banco de dados.
+          </p>
         </div>
-        <p className="text-sm text-foreground/50 mt-2 max-w-2xl">
-          Gerencie as integrações do Lumi Plus. As chaves são criptografadas com <strong className="text-foreground/70">AES-256-GCM</strong> antes de serem armazenadas no banco de dados.
-        </p>
+        <Link
+          href="/help"
+          className="flex items-center gap-2 px-4 py-2 border border-border-strong hover:border-primary hover:text-primary text-foreground/50 transition-colors text-xs font-bold uppercase tracking-widest whitespace-nowrap"
+        >
+          <BookOpen className="w-3.5 h-3.5" />
+          Central de Ajuda
+        </Link>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

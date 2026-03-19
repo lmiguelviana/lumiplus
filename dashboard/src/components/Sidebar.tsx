@@ -16,7 +16,8 @@ import {
   Brain,
   Workflow,
   Sparkles,
-  LogOut
+  LogOut,
+  BookOpen
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useTheme } from 'next-themes';
@@ -63,6 +64,7 @@ export function Sidebar() {
     { icon: Share2, label: 'Canais', href: '/channels' },
     { icon: Terminal, label: 'Logs', href: '/logs' },
     { icon: Settings, label: 'Config', href: '/settings' },
+    { icon: BookOpen, label: 'Ajuda', href: '/help' },
   ];
 
   return (
