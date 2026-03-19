@@ -1,0 +1,409 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id        String             @id @default(uuid())
+  name      String
+  slug      String             @unique
+  planTier  String             @default("free") @map("plan_tier")
+  createdAt DateTime           @default(now()) @map("created_at")
+  updatedAt DateTime           @updatedAt @map("updated_at")
+  deletedAt DateTime?          @map("deleted_at")
+  apiKeys   AgentApiKey[]
+  agents    Agent[]
+  users     TenantMember[]
+  settings  WorkspaceSetting[]
+  squads    Squad[]
+  workflows Workflow[]
+
+  @@map("tenants")
+}
+
+model WorkspaceSetting {
+  id        String   @id @default(uuid())
+  tenantId  String   @map("tenant_id")
+  key       String   @db.VarChar(100)
+  value     String
+  isSecret  Boolean  @default(false) @map("is_secret")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, key])
+  @@map("workspace_settings")
+}
+
+model User {
+  id           String         @id @default(uuid())
+  email        String         @unique
+  name         String?
+  passwordHash String?        @map("password_hash")
+  avatarUrl    String?        @map("avatar_url")
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+  deletedAt    DateTime?      @map("deleted_at")
+  tenants      TenantMember[]
+
+  @@map("users")
+}
+
+model TenantMember {
+  id        String   @id @default(uuid())
+  tenantId  String   @map("tenant_id")
+  userId    String   @map("user_id")
+  role      String   @default("member")
+  createdAt DateTime @default(now()) @map("created_at")
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([tenantId, userId])
+  @@map("tenant_members")
+}
+
+model Agent {
+  id              String                @id @default(uuid())
+  tenantId        String                @map("tenant_id")
+  name            String
+  slug            String
+  mission         String?
+  tone            String?
+  personality     String?
+  rules           String[]
+  systemPrompt    String                @map("system_prompt")
+  primaryProvider String                @default("openrouter") @map("primary_provider")
+  primaryModel    String                @default("google/gemini-2.0-flash-001") @map("primary_model")
+  fallbackModels  String[]              @map("fallback_models")
+  fallbackConfig  Json                  @default("[]") @map("fallback_config")
+  status          String                @default("active")
+  createdAt       DateTime              @default(now()) @map("created_at")
+  updatedAt       DateTime              @updatedAt @map("updated_at")
+  deletedAt       DateTime?             @map("deleted_at")
+  economyMode     Boolean               @default(false) @map("economy_mode")
+  scheduleEnabled Boolean               @default(false) @map("schedule_enabled")
+  scheduleConfig  Json?                 @map("schedule_config")
+  outOfHoursMsg   String?               @map("out_of_hours_msg")
+  agentType       String                @default("assistant") @map("agent_type") // "assistant" | "router"
+
+  // Fase 28: Grupos
+  groupEnabled          Boolean   @default(false) @map("group_enabled")
+  groupActivation       String    @default("mention") @map("group_activation") // mention, always, keyword, reply
+  groupMentionPatterns  String[]  @map("group_mention_patterns")
+  groupKeywords         String[]  @map("group_keywords")
+  groupCooldown         Int       @default(5) @map("group_cooldown")
+  groupHistoryLimit     Int       @default(10) @map("group_history_limit")
+
+  // Fase 29: Controle de Acesso
+  accessMode            String    @default("open") @map("access_mode") // open, allowlist, pairing, disabled
+  accessAllowlist       String[]  @map("access_allowlist")
+  accessBlocklist       String[]  @map("access_blocklist")
+
+  interactions    AgentInteraction[]
+  skills          AgentSkill[]
+  tenant          Tenant                @relation(fields: [tenantId], references: [id])
+  conversations   ChannelConversation[]
+  cronJobs        AgentCronJob[]
+  escalations     Escalation[]
+  knowledge       AgentKnowledge[]
+  squadMembers    SquadMember[]
+  workflowTasks   WorkflowTask[]
+  spawnedChildren SpawnedAgent[]  @relation("SpawnParent")
+  accessRequests  AccessRequest[]
+
+  @@unique([tenantId, slug])
+  @@map("agents")
+}
+
+model AgentSkill {
+  id        String   @id @default(uuid())
+  tenantId  String   @map("tenant_id")
+  agentId   String   @map("agent_id")
+  skillId   String   @map("skill_id")
+  config    Json     @default("{}")
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  agent     Agent    @relation(fields: [agentId], references: [id])
+
+  @@unique([agentId, skillId], name: "agentId_skillId")
+  @@map("agent_skills")
+}
+
+model AgentCronJob {
+  id         String    @id @default(uuid())
+  tenantId   String    @map("tenant_id")
+  agentId    String    @map("agent_id")
+  name       String    @default("Agendamento")
+  prompt     String    // O que o agente deve fazer
+  schedule   String    // Cron expression: "0 9 * * *"
+  timezone   String    @default("America/Sao_Paulo")
+  enabled    Boolean   @default(true)
+  lastRunAt  DateTime? @map("last_run_at")
+  nextRunAt  DateTime? @map("next_run_at")
+  lastResult String?   @map("last_result") // "success" | "error"
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+  agent      Agent     @relation(fields: [agentId], references: [id])
+
+  @@map("agent_cron_jobs")
+}
+
+model Escalation {
+  id        String   @id @default(uuid())
+  tenantId  String   @map("tenant_id")
+  agentId   String   @map("agent_id")
+  contactId String   @map("contact_id")
+  status    String   @default("pending") // "pending" | "resolved"
+  reason    String?
+  createdAt DateTime @default(now()) @map("created_at")
+  agent     Agent    @relation(fields: [agentId], references: [id])
+
+  @@map("escalations")
+}
+
+model AgentApiKey {
+  id           String   @id @default(uuid())
+  tenantId     String   @map("tenant_id")
+  agentId      String?  @map("agent_id")
+  provider     String
+  keyEncrypted String   @map("key_encrypted")
+  keyIv        String   @map("key_iv")
+  createdAt    DateTime @default(now()) @map("created_at")
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@map("agent_api_keys")
+}
+
+model AgentInteraction {
+  id            String   @id @default(uuid())
+  tenantId      String   @map("tenant_id")
+  agentId       String   @map("agent_id")
+  requestId     String?  @map("request_id")
+  input         Json
+  output        Json
+  contextUsed   String?  @map("context_used")
+  modelSelected String   @map("model_selected")
+  tokensUsed    Int      @map("tokens_used")
+  latencyMs     Int      @map("latency_ms")
+  status        String   @default("success")
+  errorMessage  String?  @map("error_message")
+  rating        String?  // "positive" | "negative"
+  createdAt     DateTime @default(now()) @map("created_at")
+  agent         Agent    @relation(fields: [agentId], references: [id])
+
+  @@map("agent_interactions")
+}
+
+model ChannelConversation {
+  id         String           @id @default(uuid())
+  tenantId   String           @map("tenant_id")
+  agentId    String           @map("agent_id")
+  channel    String
+  externalId String           @map("external_id")
+  metadata   Json             @default("{}")
+  status     String           @default("active")
+  createdAt  DateTime         @default(now()) @map("created_at")
+  updatedAt  DateTime         @updatedAt @map("updated_at")
+  agent      Agent            @relation(fields: [agentId], references: [id])
+  messages   ChannelMessage[]
+
+  @@unique([tenantId, channel, externalId])
+  @@map("channel_conversations")
+}
+
+model ChannelMessage {
+  id             String              @id @default(uuid())
+  conversationId String              @map("conversation_id")
+  role           String
+  content        String
+  metadata       Json                @default("{}")
+  createdAt      DateTime            @default(now()) @map("created_at")
+  conversation   ChannelConversation @relation(fields: [conversationId], references: [id])
+
+  @@map("channel_messages")
+}
+
+model AgentKnowledge {
+  id         String                       @id @default(uuid())
+  tenantId   String                       @map("tenant_id")
+  agentId    String                       @map("agent_id")
+  title      String                       @default("Documento")
+  content    String
+  chunkIndex Int                          @default(0) @map("chunk_index")
+  embedding  Unsupported("vector(1536)")?
+  createdAt  DateTime                     @default(now()) @map("created_at")
+  updatedAt  DateTime                     @updatedAt @map("updated_at")
+
+  agent Agent @relation(fields: [agentId], references: [id])
+
+  @@map("agent_knowledge")
+}
+
+model AgentMemory {
+  id        String   @id @default(uuid())
+  tenantId  String   @map("tenant_id")
+  agentId   String   @map("agent_id")
+  contactId String   @map("contact_id")
+  key       String
+  value     String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("agent_memories")
+}
+
+model Squad {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  name        String
+  description String?
+  canvasState Json?     @map("canvas_state") // Store Chat2Workflow and React Flow state
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  tenant  Tenant        @relation(fields: [tenantId], references: [id])
+  members SquadMember[]
+
+  @@map("squads")
+}
+
+model SquadMember {
+  id        String   @id @default(uuid())
+  squadId   String   @map("squad_id")
+  agentId   String   @map("agent_id")
+  role      String   @default("member") // leader, worker
+  createdAt DateTime @default(now()) @map("created_at")
+
+  squad Squad @relation(fields: [squadId], references: [id])
+  agent Agent @relation(fields: [agentId], references: [id])
+
+  @@unique([squadId, agentId])
+  @@map("squad_members")
+}
+
+model Workflow {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  name        String
+  description String?
+  trigger     Json // { type: "webhook" | "schedule" | "event", config: {} }
+  definition  Json // Flowchart nodes & edges
+  status      String   @default("active") // active, draft, archived
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant        @relation(fields: [tenantId], references: [id])
+  runs   WorkflowRun[]
+
+  @@map("workflows")
+}
+
+model WorkflowRun {
+  id         String    @id @default(uuid())
+  tenantId   String    @map("tenant_id")
+  workflowId String    @map("workflow_id")
+  status     String    @default("pending") // pending, running, waiting_approval, completed, failed
+  state      Json      @default("{}") // Current execution state
+  error      String?
+  startedAt  DateTime? @map("started_at")
+  endedAt    DateTime? @map("ended_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  workflow       Workflow       @relation(fields: [workflowId], references: [id])
+  tasks          WorkflowTask[]
+  approvals      HumanApproval[]
+  spawnedAgents  SpawnedAgent[]
+
+  @@map("workflow_runs")
+}
+
+model WorkflowTask {
+  id        String    @id @default(uuid())
+  tenantId  String    @map("tenant_id")
+  runId     String    @map("run_id")
+  agentId   String?   @map("agent_id") // Optional, task might be unassigned initially
+  status    String    @default("pending") // pending, in_progress, completed, failed
+  input     Json      @default("{}")
+  output    Json?
+  error     String?
+  startedAt DateTime? @map("started_at")
+  endedAt   DateTime? @map("ended_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  run   WorkflowRun @relation(fields: [runId], references: [id])
+  agent Agent?      @relation(fields: [agentId], references: [id])
+
+  @@map("workflow_tasks")
+}
+
+model SpawnedAgent {
+  id              String    @id @default(uuid())
+  tenantId        String    @map("tenant_id")
+  parentAgentId   String    @map("parent_agent_id")
+  workflowRunId   String    @map("workflow_run_id")
+  nodeId          String?   @map("node_id") // ID do nó SpawnAgent no canvas
+
+  name            String
+  mandate         String?   // instrução específica desta instância
+  soulOverride    Json?     @map("soul_override")
+  primaryModel    String?   @map("primary_model")
+
+  depth           Int       @default(0)
+  spawnType       String    @default("parallel") @map("spawn_type") // parallel, sequential, conditional, dynamic
+  status          String    @default("pending") // pending, running, completed, failed
+  inputData       Json?     @map("input_data")
+  outputData      Json?     @map("output_data")
+  errorMessage    String?   @map("error_message")
+
+  createdAt       DateTime  @default(now()) @map("created_at")
+  startedAt       DateTime? @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+
+  parentAgent     Agent       @relation("SpawnParent", fields: [parentAgentId], references: [id])
+  workflowRun     WorkflowRun @relation(fields: [workflowRunId], references: [id])
+
+  @@index([workflowRunId])
+  @@index([parentAgentId])
+  @@index([tenantId])
+  @@map("spawned_agents")
+}
+
+model HumanApproval {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  runId       String   @map("run_id")
+  stepId      String?  @map("step_id")
+  requestedBy String?  @map("requested_by")
+  context     Json     @default("{}")
+  status      String   @default("pending") // pending, approved, rejected
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  run WorkflowRun @relation(fields: [runId], references: [id])
+
+  @@map("human_approvals")
+}
+
+model AccessRequest {
+  id          String    @id @default(uuid())
+  tenantId    String    @map("tenant_id")
+  agentId     String    @map("agent_id")
+  senderId    String    @map("sender_id")
+  senderName  String?   @map("sender_name")
+  channel     String    // whatsapp, telegram
+  status      String    @default("pending") // pending, approved, rejected
+  createdAt   DateTime  @default(now()) @map("created_at")
+  reviewedAt  DateTime? @map("reviewed_at")
+
+  agent Agent @relation(fields: [agentId], references: [id])
+
+  @@unique([agentId, senderId])
+  @@map("access_requests")
+}

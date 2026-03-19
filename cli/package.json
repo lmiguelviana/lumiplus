@@ -1,0 +1,44 @@
+{
+  "name": "lumiplus-monorepo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lmiguelviana/lumiplus.git"
+  },
+  "version": "1.0.0",
+  "description": "Lumi Plus Command Line Interface",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "lumi": "./dist/index.js"
+  },
+  "scripts": {
+    "dev": "nodemon --exec ts-node src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "keywords": [
+    "lumi",
+    "agents",
+    "ai",
+    "cli"
+  ],
+  "homepage": "https://github.com/lmiguelviana/lumiplus#readme",
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.13.6",
+    "boxen": "^8.0.1",
+    "chalk": "^5.6.2",
+    "commander": "^14.0.3",
+    "inquirer": "^13.3.0",
+    "ora": "^9.3.0"
+  },
+  "devDependencies": {
+    "@types/commander": "^2.12.0",
+    "@types/inquirer": "^9.0.9",
+    "@types/node": "^25.5.0",
+    "nodemon": "^3.1.14",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}

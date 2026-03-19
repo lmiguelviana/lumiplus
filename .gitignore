@@ -1,0 +1,51 @@
+# ── Node ──
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ── Environment (NUNCA commitar) ──
+.env
+.env.local
+.env.production
+.env.*.local
+
+# ── Build outputs ──
+dist/
+build/
+.next/
+out/
+
+# ── Prisma ──
+backend/prisma/*.db
+backend/prisma/*.db-journal
+
+# ── WhatsApp sessions ──
+backend/baileys_auth_info/
+backend/*.json.lock
+
+# ── Logs ──
+*.log
+logs/
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+
+# ── IDE ──
+.vscode/
+.idea/
+*.swp
+
+# ── TypeScript ──
+*.tsbuildinfo
+next-env.d.ts
+
+# ── Uploads / temp ──
+uploads/
+tmp/
+.tmp/
+
+# ── Claude / agent context (não vai pro repo) ──
+.claude/

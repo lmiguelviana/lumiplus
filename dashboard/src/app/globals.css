@@ -1,0 +1,92 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #FF5722;
+  --color-primary-dark: #E64A19;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-border-strong: var(--border-strong);
+  
+  --radius-none: 0;
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+}
+
+@layer base {
+  :root {
+    --background: #ffffff;
+    --foreground: #000000;
+    --surface: #fcfcfc;
+    --border-strong: #e2e8f0;
+    --accent: #FF5722;
+    --accent-rgb: 255, 87, 34;
+  }
+
+  .dark {
+    --background: #000000;
+    --foreground: #ffffff;
+    --surface: #0a0a0a;
+    --border-strong: #1f1f1f;
+    --accent: #FF5722;
+    --accent-rgb: 255, 87, 34;
+  }
+
+  * {
+    border-color: var(--border-strong);
+  }
+
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-geist-sans), sans-serif;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  }
+}
+
+@layer components {
+  .industrial-card {
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 2px;
+    padding: 1.5rem;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .industrial-card:hover {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+    box-shadow: 4px 4px 0px var(--border-strong);
+  }
+
+  .dark .industrial-card:hover {
+    box-shadow: 4px 4px 0px var(--accent);
+  }
+
+  .btn-industrial {
+    @apply px-4 py-2 border border-black dark:border-white font-bold uppercase tracking-wider text-xs transition-all hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black active:translate-y-0.5;
+    border-radius: 0;
+  }
+
+  .btn-accent {
+    @apply px-4 py-2 bg-[#FF5722] text-white font-bold uppercase tracking-wider text-xs transition-all hover:bg-[#E64A19] shadow-[4px_4px_0px_rgba(0,0,0,0.2)] active:translate-y-0.5 active:shadow-none;
+    border-radius: 0;
+  }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--background);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
