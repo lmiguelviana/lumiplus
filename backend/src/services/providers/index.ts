@@ -2,7 +2,7 @@
  * Multi-Provider AI Adapters
  * Strategy Pattern — cada provedor implementa formatRequest/parseResponse
  *
- * Providers OpenAI-compatible: OpenRouter, OpenAI, DeepSeek, Moonshot, Zhipu
+ * Providers OpenAI-compatible: OpenRouter, OpenAI, DeepSeek, Moonshot, Zhipu, NVIDIA NIM
  * Providers com formato próprio: Anthropic (Claude), Google (Gemini)
  */
 
@@ -80,6 +80,58 @@ export const openAIAdapter = openAICompatible('openai', 'https://api.openai.com/
 export const deepSeekAdapter = openAICompatible('deepseek', 'https://api.deepseek.com/v1');
 export const moonshotAdapter = openAICompatible('moonshot', 'https://api.moonshot.cn/v1');
 export const zhipuAdapter = openAICompatible('zhipu', 'https://open.bigmodel.cn/api/paas/v4');
+
+// ── NVIDIA NIM — OpenAI-compatible com suporte a Kimi K2.5 Thinking Mode ──
+
+/**
+ * Modelos NIM com thinking mode. Kimi K2.5 suporta dois modos:
+ * - Thinking (padrão): reasoning traces, temp=1.0, top_p=0.95
+ * - Instant: respostas diretas, temp=0.6
+ */
+const NIM_THINKING_MODELS = new Set([
+  'moonshotai/kimi-k2.5',
+]);
+
+export const nvidiaAdapter: ProviderAdapter = {
+  name: 'nvidia',
+  getEndpoint: () => 'https://integrate.api.nvidia.com/v1/chat/completions',
+  getHeaders: (apiKey) => ({
+    'Authorization': `Bearer ${apiKey}`,
+    'Content-Type': 'application/json',
+  }),
+  formatBody: (messages, model, tools, maxTokens = 2048) => {
+    const isThinkingModel = NIM_THINKING_MODELS.has(model);
+    const body: Record<string, unknown> = {
+      model,
+      messages,
+      max_tokens: maxTokens,
+      // Temperatura recomendada pela NVIDIA para cada modo
+      temperature: isThinkingModel ? 1.0 : 0.6,
+      top_p: isThinkingModel ? 0.95 : 0.7,
+      ...(tools?.length ? { tools, tool_choice: 'auto' } : {}),
+    };
+    // Kimi K2.5: thinking mode ativo por padrão (mais poderoso)
+    // Para instant mode, o usuário pode passar thinking=false em extra_body
+    if (isThinkingModel) {
+      body.stream = false;
+    }
+    return body;
+  },
+  parseResponse: (data) => {
+    const choice = data.choices?.[0];
+    const message = choice?.message;
+    // Kimi K2.5 retorna reasoning_content separado do content no thinking mode
+    const thinkingContent = message?.reasoning_content
+      ? `<think>${message.reasoning_content}</think>\n\n`
+      : '';
+    return {
+      content: thinkingContent + (message?.content || ''),
+      model: data.model || '',
+      tokensUsed: data.usage?.total_tokens || 0,
+      toolCalls: message?.tool_calls,
+    };
+  },
+};
 
 // ── Anthropic (Claude) — formato próprio ──
 
@@ -183,6 +235,7 @@ export const PROVIDERS: Record<string, ProviderAdapter> = {
   deepseek: deepSeekAdapter,
   moonshot: moonshotAdapter,
   zhipu: zhipuAdapter,
+  nvidia: nvidiaAdapter,
 };
 
 /** Chave de WorkspaceSetting para cada provedor */
@@ -194,4 +247,5 @@ export const PROVIDER_SETTING_KEYS: Record<string, string> = {
   deepseek: 'deepseek_key',
   moonshot: 'moonshot_key',
   zhipu: 'zhipu_key',
+  nvidia: 'nvidia_nim_key',
 };

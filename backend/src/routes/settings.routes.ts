@@ -14,8 +14,19 @@ const SECRET_KEYS = [
   'groq_key',
   'brave_search_key',
   'brevo_key',
+  'instagram_access_token',
+  'instagram_user_id',
+  'imgbb_api_key',
   'meta_app_secret',
-  'custom_ai_providers'
+  'custom_ai_providers',
+  'nvidia_nim_key',       // NVIDIA NIM / Kimi K2.5
+  'email_pass',           // Senha de e-mail / App Password (IMAP+SMTP)
+  'google_api_key',       // Google Maps + Weather API
+  'gerarthumbs_api_key',  // GeraThumbs — geração de thumbnails
+  'brevo_api_key',        // Brevo Marketing API
+  'trello_api_key',       // Trello API
+  'trello_token',         // Trello Token
+  'stripe_secret_key',    // Stripe Secret Key
 ];
 
 export async function settingsRoutes(app: FastifyInstance) {

@@ -84,6 +84,16 @@ export default function ChatPage() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  const handleStop = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsTyping(false);
+    setIsAnalyzing(false);
+  };
 
   const startRecording = async () => {
     try {
@@ -408,16 +418,20 @@ export default function ChatPage() {
     setIsTyping(true);
 
     try {
+      abortControllerRef.current = new AbortController();
+      const signal = abortControllerRef.current.signal;
+
       // 1. Análise Visual (se houver preview)
       if (preview) {
         setIsAnalyzing(true);
         try {
           const mimeType = preview.split(';')[0].split(':')[1];
           const base64 = preview.split(',')[1];
-          const visionRes = await api.post('/ai/vision', { imageBase64: base64, mimeType });
+          const visionRes = await api.post('/ai/vision', { imageBase64: base64, mimeType }, { signal });
           finalInput = `[CONTEXTO VISUAL: O usuário enviou uma imagem que o sistema analisou: ${visionRes.data.description}]\n\n${rawInput}`;
           setPreview(null);
-        } catch (visionErr) {
+        } catch (visionErr: any) {
+          if (visionErr.name === 'CanceledError' || visionErr.message === 'canceled') throw visionErr;
           console.error('Vision Error:', visionErr);
         } finally {
           setIsAnalyzing(false);
@@ -426,7 +440,7 @@ export default function ChatPage() {
 
       // 2a. Squad ativa — envia como objetivo para a squad
       if (activeSquad) {
-        const res = await api.post(`/squads/${activeSquad.id}/trigger`, { objective: finalInput });
+        const res = await api.post(`/squads/${activeSquad.id}/trigger`, { objective: finalInput }, { signal });
         setMessages(prev => [...prev, {
           role: 'assistant',
           content: `⚡ Squad **${activeSquad.name}** iniciada!\n\nRun ID: \`${res.data.runId}\`\nObjetivo: ${finalInput}\n\nA squad está executando. Os agentes vão colaborar e o resultado será salvo na memória. Use \`/squad memoria\` para ver o aprendizado após a execução.`,
@@ -445,7 +459,7 @@ export default function ChatPage() {
         messages: chatHistory,
         agentId: selectedAgent.id,
         conversationId: activeConversationId || undefined,
-      });
+      }, { signal });
 
       // Texto limpo (sem marcação [[buttons]]) + botões parseados
       const displayContent = response.data.text || response.data.content;
@@ -461,7 +475,14 @@ export default function ChatPage() {
         interactionId: response.data.interactionId,
         buttons: response.data.buttons,
       }]);
-    } catch (error) {
+    } catch (error: any) {
+      if (error.name === 'CanceledError' || error.message === 'canceled') {
+        setMessages(prev => [...prev, {
+          role: 'system',
+          content: '🛑 Requisição interrompida pelo usuário.'
+        }]);
+        return;
+      }
       console.error('Erro no chat:', error);
       setMessages(prev => [...prev, {
         role: 'assistant',
@@ -676,15 +697,20 @@ export default function ChatPage() {
                           setMessages(prev => [...prev, { role: 'user', content: btnText }]);
                           try {
                             setIsTyping(true);
+                            abortControllerRef.current = new AbortController();
                             const chatHistory = [...messages, { role: 'user' as const, content: btnText }];
                             const res = await api.post('/ai/chat', {
                               messages: chatHistory,
                               agentId: selectedAgent.id,
                               conversationId: activeConversationId || undefined,
-                            });
+                            }, { signal: abortControllerRef.current.signal });
                             const displayContent = res.data.text || res.data.content;
                             setMessages(prev => [...prev, { role: 'assistant', content: displayContent, buttons: res.data.buttons, interactionId: res.data.interactionId }]);
-                          } catch { setMessages(prev => [...prev, { role: 'assistant', content: 'Erro ao processar.' }]); }
+                          } catch (err: any) {
+                            if (err?.name !== 'CanceledError') {
+                              setMessages(prev => [...prev, { role: 'assistant', content: 'Erro ao processar.' }]);
+                            }
+                          }
                           finally { setIsTyping(false); }
                         }}
                         className="px-4 py-2 text-[11px] font-black uppercase tracking-wider border-2 border-primary/60 text-primary hover:bg-primary hover:text-white transition-all"
@@ -791,7 +817,7 @@ export default function ChatPage() {
             }}
             placeholder={activeSquad ? `OBJETIVO PARA SQUAD ${activeSquad.name.toUpperCase()}...` : "DIGITE / PARA VER COMANDOS..."}
             className="w-full bg-surface border-2 border-border-strong p-4 text-sm font-bold uppercase tracking-wider outline-none focus:border-primary transition-all placeholder:opacity-30"
-            disabled={isTyping}
+            // disabled removido para permitir o usuário digitar em background se quiser
           />
 
           {/* Autocomplete de comandos / */}
@@ -873,14 +899,25 @@ export default function ChatPage() {
             <Mic className="w-5 h-5" />
           </button>
         )}
-        <button
-          type="submit"
-          disabled={!input.trim() || isTyping}
-          className="btn-accent px-8 flex items-center gap-2 disabled:opacity-50 disabled:grayscale"
-        >
-          <span className="hidden sm:inline">EXECUTAR</span>
-          <Send className="w-4 h-4" />
-        </button>
+        {isTyping ? (
+          <button
+            type="button"
+            onClick={handleStop}
+            className="btn-accent px-8 flex items-center justify-center gap-2 bg-red-500/80 hover:bg-red-500 border-red-500 text-white transition-colors"
+          >
+            <span className="hidden sm:inline">PARAR</span>
+            <Square className="w-4 h-4 fill-current" />
+          </button>
+        ) : (
+          <button
+            type="submit"
+            disabled={!input.trim()}
+            className="btn-accent px-8 flex items-center gap-2 disabled:opacity-50 disabled:grayscale"
+          >
+            <span className="hidden sm:inline">EXECUTAR</span>
+            <Send className="w-4 h-4" />
+          </button>
+        )}
       </form>
     </div>
     </div>

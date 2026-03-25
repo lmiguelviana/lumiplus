@@ -422,6 +422,11 @@ export default function AgentsPage() {
                       <option value="deepseek/deepseek-chat">DeepSeek V3</option>
                       <option value="moonshotai/kimi-k2.5">Kimi K2.5</option>
                     </optgroup>
+                    <optgroup label="⚡ NVIDIA NIM">
+                      <option value="nvidia:moonshotai/kimi-k2.5">Kimi K2.5 — Thinking Mode (NVIDIA NIM)</option>
+                      <option value="nvidia:meta/llama-3.1-70b-instruct">Llama 3.1 70B (NVIDIA NIM)</option>
+                      <option value="nvidia:nvidia/llama-3.1-nemotron-70b-instruct">Nemotron 70B (NVIDIA NIM)</option>
+                    </optgroup>
                     <optgroup label="🆓 Gratuitos (via OpenRouter)">
                       <option value="google/gemini-2.0-flash-exp:free">Gemini 2.0 Flash (Grátis)</option>
                       <option value="meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B (Grátis)</option>
@@ -575,6 +580,11 @@ export default function AgentsPage() {
                               <option value="anthropic/claude-haiku-4-5">Claude Haiku 4.5</option>
                               <option value="deepseek/deepseek-chat">DeepSeek V3</option>
                               <option value="moonshotai/kimi-k2.5">Kimi K2.5</option>
+                            </optgroup>
+                            <optgroup label="⚡ NVIDIA NIM">
+                              <option value="nvidia:moonshotai/kimi-k2.5">Kimi K2.5 — Thinking Mode (NVIDIA NIM)</option>
+                              <option value="nvidia:meta/llama-3.1-70b-instruct">Llama 3.1 70B (NVIDIA NIM)</option>
+                              <option value="nvidia:nvidia/llama-3.1-nemotron-70b-instruct">Nemotron 70B (NVIDIA NIM)</option>
                             </optgroup>
                             <optgroup label="🆓 Gratuitos">
                               <option value="google/gemini-2.0-flash-exp:free">Gemini 2.0 Flash (Grátis)</option>

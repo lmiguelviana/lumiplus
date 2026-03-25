@@ -1,64 +1,59 @@
-# Arquitetura do Sistema — Lumi Plus 🏗️
+# Arquitetura do Sistema
 
-O **Lumi Plus** é uma plataforma multi-tenant para orquestração de Agentes de IA, projetada para escalabilidade, segurança e modularidade.
+O Lumi Plus e organizado como um monorepo com backend, dashboard, CLI e documentacao. O backend concentra a orquestracao de IA, registro de skills, conhecimento, canais e automacoes.
 
-## 🏗️ Visão Geral da Pilha
+## Camadas principais
 
-### Backend (The Core)
-- **Framework:** [Fastify](https://www.fastify.io/) (TypeScript)
-- **Banco de Dados:** PostgreSQL + [Prisma ORM](https://www.prisma.io/)
-- **Processamento:** BullMQ (Redis) com Fallback In-process ("Zero-Redis").
-- **Observabilidade:** Logger centralizado (`lib/logger.ts`) e Error Handling padronizado.
-- **Qualidade:** Testes automatizados com [Vitest](https://vitest.dev/).
-- **Segurança:** RLS (Row Level Security) + AES-256 Vault para chaves de API.
-- **IA Gateway:** Orquestração via OpenRouter (Chain de Fallbacks).
+### Backend
 
-### Frontend (The Dashboard)
-- **Framework:** [Next.js 15+](https://nextjs.org/) (App Router)
-- **Design:** Tailwind CSS v4 + Framer Motion.
-- **Ícones:** Lucide React.
-- **Comunicação:** Axios + SWR/React Query.
+- Fastify + TypeScript
+- Prisma para persistencia
+- BullMQ ou fallback in-process para execucao assicrona
+- Vault de credenciais por workspace
+- Orquestracao de modelos via camada de providers
 
-### CLI (The Operator)
-- **Nativo:** Node.js (Commander + Inquirer).
-- **Função:** Bootstrap, configuração de banco e gerenciamento de deploys.
+### Dashboard
 
-- **Workflow de Squads:** A tela “Workflows” no dashboard é o **Workflow de Squads** — único canvas de fluxos. O usuário usa **agentes já criados** e adiciona **trabalhadores** (cada um com contexto/soul individual). Se precisar, o fluxo notifica o humano via Telegram/WhatsApp. Sub-agentes (escritor, design) podem ter memória (arquivos .md, conhecimento RAG) e evoluir com o uso. Ver [docs/07_Visao_Workflow_Trabalhadores.md](docs/07_Visao_Workflow_Trabalhadores.md).
+- Next.js App Router
+- Gestao de agentes, skills, settings, chat e workflows
 
-## 📁 Estrutura de Pastas
+### CLI
 
-```bash
-lumiplus/
-├── backend/            # API Core, Services e Dados
-│   ├── prisma/         # Schema e Migrations
-│   ├── src/
-│   │   ├── config/     # Env e Constantes
-│   │   ├── routes/     # Endpoints (V1)
-│   │   └── services/   # Lógica de IA, RAG e Bots
-├── dashboard/          # Painel Web Pro (Next.js)
-├── cli/                # Ferramenta de Linha de Comando
-└── README.md           # Guia mestre
-```
+- Bootstrap e operacao local
 
-## 🔐 Camada de Segurança
+## Fluxo de uma mensagem
 
-1. **Multi-tenancy:** Todo dado é filtrado pelo `tenantId` no banco via RLS.
-2. **Criptografia:** Chaves de API externas não são salvas em texto puro. O `VaultService` criptografa os dados antes da persistência.
-3. **Auth:** Autenticação via JWT com contexto de tenant injetado em cada request.
+1. A mensagem entra por web chat, canal externo ou API.
+2. O backend identifica tenant, agente e conversa.
+3. Se a mensagem parecer onboarding de API externa, o `ApiOnboardingService` tenta resolver isso primeiro.
+4. O sistema monta contexto com historico, knowledge e instrucoes de skills.
+5. O `AIService` seleciona providers/modelos e executa a chamada.
+6. Se houver tool calls, o `SkillRegistry` executa as tools e o `AIService` faz o round-trip.
+7. A resposta final e persistida e devolvida ao canal.
 
-## 🧠 Fluxo de Inteligência (RAG)
+## APIs customizadas via chat
 
-Quando um usuário envia uma mensagem:
-1. O sistema gera um **Embedding** da pergunta.
-2. Faz uma busca vetorial no `pgvector` para encontrar documentos relacionados.
-3. Injeta o contexto no prompt e envia para o modelo mais estável via **OpenRouter Fallback Chain**.
-## 💬 Comandos de Chat (Omnichannel)
-O sistema suporta comandos de texto em todos os canais (Web Chat, WhatsApp, Telegram) para controle rápido:
+O sistema agora tem um caminho explicito para "instalar" APIs externas pela conversa.
 
-- **Agentes:** `/agentes` (lista), `/usar <n>` (troca ativa), `/status` (quem sou eu?).
-- **Squads:** `/squad lista`, `/squad info` (detalhes), `/squad exec <missão>`, `/squad memoria`.
-- **Automação (Workflows):** `/run <nome_do_workflow>` (disparo remoto).
-- **Utilidades:** `/skills` (lista ferramentas ativas), `/resetar` (limpa contexto), `/ajuda`.
+- O onboarding salva credencial e documentacao.
+- O agente recebe uma integracao `custom:<slug>`.
+- O `SkillRegistry` gera uma tool `custom_api_<slug>`.
+- `call_api` e as tools dinamicas resolvem placeholders como `{{minha_api_key}}`.
 
----
-*Documentação atualizada em 20/03/2026 às 09:15*
+Isso reduz a dependencia de prompts longos e melhora a confiabilidade quando o usuario compartilha uma documentacao grande.
+
+## Resiliencia do AIService
+
+O `AIService` foi endurecido para cenarios comuns de falha:
+
+- fallback entre providers
+- filtro de providers mais compativeis quando existem mensagens `tool`
+- `max_tokens` adaptativo
+- retry quando a API informa credito insuficiente com um teto menor suportado
+
+## Seguranca
+
+- isolamento por `tenantId`
+- credenciais criptografadas no workspace
+- autenticacao via JWT
+- settings de produto persistidos no banco; `.env` fica restrito a infraestrutura

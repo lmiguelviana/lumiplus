@@ -3,6 +3,7 @@ import { KnowledgeService } from './knowledge.service.js';
 import { prisma } from '../lib/prisma.js';
 import { PROVIDERS, PROVIDER_SETTING_KEYS, type ProviderAdapter, type ChatMessage as ProviderChatMessage } from './providers/index.js';
 import { SkillRegistry } from './skills/registry.js';
+import { ApiOnboardingService } from './api-onboarding.service.js';
 
 interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
@@ -36,6 +37,17 @@ export class AIService {
     const agent = await prisma.agent.findUnique({ where: { id: agentId } });
     
     try {
+      const onboardingResult = await ApiOnboardingService.maybeHandle(tenantId, agentId, messages);
+      if (onboardingResult?.handled) {
+        const aiRes = {
+          content: onboardingResult.response || 'Configuracao concluida.',
+          model: 'system/api-onboarding',
+          tokensUsed: 0
+        };
+        const interactionId = await this.logInteraction(tenantId, agentId, messages, aiRes, 'api_onboarding', Date.now() - startTime).catch(() => undefined);
+        return { ...aiRes, interactionId };
+      }
+
       // 1. Injeção de "Soul" (Identidade e Regras)
       const systemContext: ChatMessage[] = [];
       
@@ -129,10 +141,18 @@ ${agent?.systemPrompt || 'Responda de forma clara e objetiva em português.'}`.t
 
       // Primary
       // Provider/model: agente > config global > padrão
+      // Suporte ao formato "nvidia:model-id" nos selects de UI (encode provider+model numa string)
       const globalProvider = await settingsService.get(tenantId, 'ai_provider');
       const globalModel = await settingsService.get(tenantId, 'ai_default_model');
-      const primaryProvider = (agent as any)?.primaryProvider || globalProvider || 'openrouter';
-      const primaryModel = agent?.primaryModel || globalModel || 'google/gemini-2.0-flash-001';
+      let rawPrimaryModel = agent?.primaryModel || globalModel || 'google/gemini-2.0-flash-001';
+      let primaryProvider = (agent as any)?.primaryProvider || globalProvider || 'openrouter';
+
+      // Decode "nvidia:model-id" → provider=nvidia, model=model-id
+      if (rawPrimaryModel.startsWith('nvidia:')) {
+        primaryProvider = 'nvidia';
+        rawPrimaryModel = rawPrimaryModel.slice('nvidia:'.length);
+      }
+      const primaryModel = rawPrimaryModel;
       attempts.push({ provider: primaryProvider, model: primaryModel });
 
       // Fallbacks globais da Config (ai_fallback_0, ai_fallback_1, ai_fallback_2)
@@ -177,13 +197,21 @@ ${agent?.systemPrompt || 'Responda de forma clara e objetiva em português.'}`.t
         seen.add(key);
         return true;
       }).slice(0, 5);
+      const hasToolMessages = messages.some((message: any) => message?.role === 'tool' || message?.tool_call_id);
+      const toolCompatibleAttempts = uniqueAttempts.filter((attempt) =>
+        ['openrouter', 'openai', 'deepseek', 'moonshot', 'zhipu', 'nvidia'].includes(attempt.provider)
+      );
+      const providerAttempts = hasToolMessages && toolCompatibleAttempts.length > 0
+        ? toolCompatibleAttempts
+        : uniqueAttempts;
 
       // 5. Tentar cada provider/model sequencialmente até um funcionar
       let lastError = '';
       let data: any = null;
       let usedProvider = '';
+      const baseMaxOutputTokens = this.calculateMaxOutputTokens(finalMessages, estimatedTokens);
 
-      for (const attempt of uniqueAttempts) {
+      for (const attempt of providerAttempts) {
         const adapter = PROVIDERS[attempt.provider];
         if (!adapter) { lastError = `Provedor "${attempt.provider}" não suportado`; continue; }
 
@@ -193,23 +221,35 @@ ${agent?.systemPrompt || 'Responda de forma clara e objetiva em português.'}`.t
 
         const endpoint = adapter.getEndpoint(attempt.model);
         const headers = adapter.getHeaders(apiKey);
-        const body = adapter.formatBody(finalMessages, attempt.model, tools, 1000);
+        let maxOutputTokens = baseMaxOutputTokens;
+        let body = adapter.formatBody(finalMessages, attempt.model, tools, maxOutputTokens);
 
-        const timeoutSec = parseInt(await settingsService.get(tenantId, 'ai_timeout') || '30') || 30;
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), timeoutSec * 1000);
+        // Kimi K2.5 no Thinking Mode pode demorar mais que 30s - usa timeout maior para NVIDIA
+        const defaultTimeout = attempt.provider === 'nvidia' ? '90' : '30';
+        const timeoutSec = parseInt(await settingsService.get(tenantId, 'ai_timeout') || defaultTimeout) || parseInt(defaultTimeout);
 
         try {
-          const response = await fetch(endpoint, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(body),
-            signal: controller.signal,
-          });
-          clearTimeout(timeout);
+          let response = await this.fetchWithTimeout(endpoint, headers, body, timeoutSec);
 
           if (!response.ok) {
-            const errorText = await response.text();
+            let errorText = await response.text();
+            const affordableTokens = this.extractAffordableTokens(errorText);
+
+            if (response.status === 402 && affordableTokens && affordableTokens >= 128 && affordableTokens < maxOutputTokens) {
+              maxOutputTokens = Math.max(128, affordableTokens - 40); // Margem de segurança maior
+              body = adapter.formatBody(finalMessages, attempt.model, tools, maxOutputTokens);
+              console.warn(`[AIService] Repetindo ${attempt.provider}/${attempt.model} com max_tokens=${maxOutputTokens} por limite de crédito.`);
+              response = await this.fetchWithTimeout(endpoint, headers, body, timeoutSec);
+
+              if (response.ok) {
+                data = await response.json();
+                usedProvider = attempt.provider;
+                console.log(`[AIService] ${attempt.provider}/${attempt.model} respondeu apos ajuste de max_tokens`);
+                break;
+              }
+
+              errorText = await response.text();
+            }
             const shortError = errorText.slice(0, 200);
             if (response.status === 402) {
               lastError = `Sem créditos em ${attempt.provider} (modelo: ${attempt.model}). Detalhes: ${shortError}`;
@@ -227,7 +267,6 @@ ${agent?.systemPrompt || 'Responda de forma clara e objetiva em português.'}`.t
           console.log(`[AIService] ✅ ${attempt.provider}/${attempt.model} respondeu`);
           break; // Sucesso!
         } catch (fetchErr: any) {
-          clearTimeout(timeout);
           if (fetchErr.name === 'AbortError') {
             lastError = `Timeout 30s em ${attempt.provider}/${attempt.model}`;
             console.warn(`[AIService] ${lastError}`);
@@ -247,6 +286,7 @@ ${agent?.systemPrompt || 'Responda de forma clara e objetiva em português.'}`.t
       const adapter = PROVIDERS[usedProvider];
       const parsed = adapter.parseResponse(data);
       const message = {
+        role: 'assistant' as const,
         content: parsed.content || '',
         tool_calls: parsed.toolCalls?.length ? parsed.toolCalls : undefined,
       };
@@ -319,7 +359,7 @@ ${agent?.systemPrompt || 'Responda de forma clara e objetiva em português.'}`.t
         }));
 
         // Chamar a IA novamente com os resultados das ferramentas
-        return this.complete(tenantId, agentId, [...messages, message, ...toolResults as any], models);
+        return this.complete(tenantId, agentId, [...messages, message, ...toolResults as any], models, channel);
       }
 
       const aiRes = {
@@ -334,6 +374,40 @@ ${agent?.systemPrompt || 'Responda de forma clara e objetiva em português.'}`.t
     } catch (error: any) {
       this.logInteraction(tenantId, agentId, messages, null, contextUsed, Date.now() - startTime, 'error', error.message).catch(e => {});
       return { content: "Erro técnico ao processar resposta.", model: 'error', tokensUsed: 0 };
+    }
+  }
+
+  private static calculateMaxOutputTokens(messages: ChatMessage[], estimatedTokens?: number) {
+    const promptTokens = estimatedTokens ?? messages.reduce((acc, message) => acc + Math.ceil(message.content.length / 4), 0);
+    if (promptTokens >= 3200) return 300;
+    if (promptTokens >= 2400) return 400;
+    if (promptTokens >= 1600) return 500;
+    return 750; // Reduzido de 850 para ser mais seguro com créditos residuais
+  }
+
+  private static extractAffordableTokens(errorText: string) {
+    const match = errorText.match(/can only afford (\d+)/i);
+    return match ? Number(match[1]) : null;
+  }
+
+  private static async fetchWithTimeout(
+    endpoint: string,
+    headers: Record<string, string>,
+    body: any,
+    timeoutSec: number
+  ) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutSec * 1000);
+
+    try {
+      return await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
     }
   }
 

@@ -1354,7 +1354,13 @@ function FlowContent({
 
   const onConnect = useCallback(
     (params: Connection) => setEdges((eds) => {
-      const newEdge = { ...params, type: 'deletable', animated: true, style: { strokeWidth: 2, stroke: 'var(--accent)' } };
+      const newEdge = {
+        ...params,
+        id: `e-${params.source}-${params.target}-${Date.now()}`,
+        type: 'deletable',
+        animated: true,
+        style: { strokeWidth: 2, stroke: 'var(--accent)' }
+      };
       // Evita duplicatas pelo par source+target+handle
       const duplicate = eds.some(
         (e) => e.source === params.source && e.target === params.target &&

@@ -44,10 +44,11 @@ export class ButtonParserService {
 
       // [Texto] → Quick Reply (evita duplicatas)
       const replyBtnRegex = /\[([^\]]+)\](?!\(|{)/g;
-      let replyMatch;
+      let replyMatch: RegExpExecArray | null;
       while ((replyMatch = replyBtnRegex.exec(block)) !== null) {
-        if (!buttons.find(b => b.text === replyMatch[1])) {
-          buttons.push({ text: replyMatch[1], type: 'reply', value: replyMatch[1] });
+        const replyText = replyMatch[1];
+        if (!buttons.find(b => b.text === replyText)) {
+          buttons.push({ text: replyText, type: 'reply', value: replyText });
         }
       }
     }

@@ -14,23 +14,39 @@ interface SkillContext {
   credentials: Record<string, string>;
 }
 
+interface CustomApiConfig {
+  apiName?: string;
+  credentialKey?: string;
+  authHeader?: string;
+  authScheme?: string;
+  exampleUrl?: string | null;
+  baseUrl?: string | null;
+  defaultPath?: string | null;
+  docsTitle?: string;
+  type?: string;
+}
+
 export class SkillRegistry {
 
   /** Retorna tools ativas de um agente (para passar ao AIService) */
   static async getActiveTools(tenantId: string, agentId: string) {
     const activeSkills = await this.getActiveSkillIds(tenantId, agentId);
-    return activeSkills
+    const catalogTools = activeSkills
       .map(id => SKILL_CATALOG[id]?.tool)
       .filter(Boolean);
+    const customTools = await this.getCustomApiTools(tenantId, agentId);
+    return [...catalogTools, ...customTools];
   }
 
   /** Retorna adições ao system prompt de skills ativas */
   static async getSystemPromptAdditions(tenantId: string, agentId: string) {
     const activeSkills = await this.getActiveSkillIds(tenantId, agentId);
-    return activeSkills
+    const catalogAdditions = activeSkills
       .map(id => SKILL_CATALOG[id]?.systemPromptAddition)
       .filter(Boolean)
-      .join('\n\n');
+    ;
+    const customAdditions = await this.getCustomSkillPromptAdditions(tenantId, agentId);
+    return [...catalogAdditions, ...customAdditions].join('\n\n');
   }
 
   /** IDs das skills ativas */
@@ -98,17 +114,387 @@ export class SkillRegistry {
 
   /** Executa handler de uma skill */
   static async execute(skillId: string, args: any, context: SkillContext): Promise<string> {
+    if (skillId.startsWith('custom_api_')) {
+      return this.executeCustomApiTool(skillId, args, context);
+    }
+
+    const skillDefinition = Object.values(SKILL_CATALOG).find((skill) =>
+      skill.id === skillId || skill.tool.function.name === skillId
+    );
+    if (skillDefinition?.credentials?.length) {
+      const { settingsService } = await import('../settings.service.js');
+      const loadedCredentials = { ...context.credentials };
+
+      for (const credential of skillDefinition.credentials) {
+        if (!loadedCredentials[credential.key]) {
+          const value = await settingsService.get(context.tenantId, credential.key);
+          if (value) loadedCredentials[credential.key] = value;
+        }
+      }
+
+      context = { ...context, credentials: loadedCredentials };
+    }
+
     const handler = SKILL_HANDLERS[skillId];
     if (handler) return handler(args, context);
 
     // Fallback: handler genérico
     return `Skill "${skillId}" não tem handler implementado ainda.`;
   }
+
+  private static async getCustomSkillPromptAdditions(tenantId: string, agentId: string): Promise<string[]> {
+    try {
+      const customSkills = await prisma.agentSkill.findMany({
+        where: {
+          tenantId,
+          agentId,
+          enabled: true,
+          skillId: { startsWith: 'custom:' },
+        },
+      });
+
+      return customSkills.map((skill) => {
+        const config = (skill.config || {}) as Record<string, any>;
+        const apiName = String(config.apiName || skill.skillId.replace(/^custom:/, '').replace(/[_-]/g, ' '));
+        const credentialKey = String(config.credentialKey || skill.skillId.replace(/^custom:/, '').replace(/-/g, '_'));
+        const authHeader = String(config.authHeader || 'Authorization');
+        const authPrefix = config.authScheme ? `${String(config.authScheme)} ` : '';
+        const exampleUrl = config.exampleUrl ? ` Endpoint/base conhecido: ${String(config.exampleUrl)}.` : '';
+        const docsTitle = config.docsTitle ? ` Procure a documentacao em knowledge_search usando "${String(config.docsTitle)}".` : '';
+        const toolName = this.toCustomToolName(skill.skillId);
+
+        return `API personalizada configurada: ${apiName}.${exampleUrl}${docsTitle} Para usar esta integracao, utilize a tool \`${toolName}\`. Envie SEMPRE o payload da requisicao (parametros, acoes, JSON) no atributo \`body\`. O valor da credencial nunca deve ser adivinhado, use EXATAMENTE a string \`{{${credentialKey}}}\` no header da tool.`;
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  private static async getCustomApiTools(tenantId: string, agentId: string) {
+    try {
+      const customSkills = await prisma.agentSkill.findMany({
+        where: {
+          tenantId,
+          agentId,
+          enabled: true,
+          skillId: { startsWith: 'custom:' },
+        },
+      });
+
+      return customSkills
+        .filter((skill) => {
+          const config = (skill.config || {}) as CustomApiConfig;
+          return (config.type || 'custom_api') === 'custom_api';
+        })
+        .map((skill) => {
+          const config = (skill.config || {}) as CustomApiConfig;
+          const apiName = String(config.apiName || skill.skillId.replace(/^custom:/, '').replace(/[_-]/g, ' '));
+          const toolName = this.toCustomToolName(skill.skillId);
+          const defaultPath = config.defaultPath || '/';
+          const baseUrl = config.baseUrl || config.exampleUrl || '';
+
+          return {
+            type: 'function' as const,
+            function: {
+              name: toolName,
+              description: `Executa operacoes na API personalizada ${apiName}. Base conhecida: ${baseUrl || 'nao definida'}. Caminho padrao: ${defaultPath}.`,
+              parameters: {
+                type: 'object',
+                properties: {
+                  method: {
+                    type: 'string',
+                    enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+                    description: 'Metodo HTTP da chamada',
+                  },
+                  path: {
+                    type: 'string',
+                    description: `Path relativo da rota. Use "${defaultPath}" como base quando fizer sentido.`,
+                  },
+                  url: {
+                    type: 'string',
+                    description: 'URL absoluta opcional. Se omitida, o sistema monta a URL com baseUrl + path.',
+                  },
+                  headers: {
+                    type: 'object',
+                    description: 'Headers extras alem da autenticacao automatica.',
+                  },
+                  query: {
+                    type: 'object',
+                    description: 'Query string em formato chave/valor.',
+                    additionalProperties: true,
+                  },
+                  body: {
+                    type: 'object',
+                    description: 'Payload JSON da chamada. OBRIGATÓRIO para POST/PUT (ex: passe {"action":"list_gallery"} aqui).',
+                    additionalProperties: true,
+                  },
+                },
+                required: ['method', 'path', 'body'],
+              },
+            },
+          };
+        });
+    } catch {
+      return [];
+    }
+  }
+
+  private static async executeCustomApiTool(skillId: string, args: any, context: SkillContext): Promise<string> {
+    const customSkillId = this.fromCustomToolName(skillId);
+    const customSkill = await prisma.agentSkill.findFirst({
+      where: {
+        tenantId: context.tenantId,
+        agentId: context.agentId,
+        skillId: customSkillId,
+        enabled: true,
+      },
+    });
+
+    if (!customSkill) {
+      return `Integracao customizada "${skillId}" nao encontrada para este agente.`;
+    }
+
+    const config = (customSkill.config || {}) as CustomApiConfig;
+    const credentialKey = String(config.credentialKey || customSkillId.replace(/^custom:/, '').replace(/-/g, '_'));
+    const authHeader = String(config.authHeader || 'Authorization');
+    const authScheme = config.authScheme ? `${String(config.authScheme)} ` : '';
+    const baseUrl = String(config.baseUrl || '');
+    const defaultPath = String(config.defaultPath || '/');
+    const path = String(args.path || defaultPath);
+    const url = args.url ? String(args.url) : buildCustomApiUrl(baseUrl, path, args.query);
+
+    const headers = {
+      ...(args.headers || {}),
+      [authHeader]: `${authScheme}{{${credentialKey}}}`,
+    };
+
+    return SKILL_HANDLERS.call_api({
+      method: String(args.method || 'GET').toUpperCase(),
+      url,
+      headers,
+      body: args.body,
+    }, context);
+  }
+
+  private static toCustomToolName(skillId: string) {
+    return `custom_api_${skillId.replace(/^custom:/, '').replace(/[^a-zA-Z0-9_]/g, '_')}`;
+  }
+
+  private static fromCustomToolName(toolName: string) {
+    return `custom:${toolName.replace(/^custom_api_/, '').replace(/_/g, '-')}`;
+  }
+}
+
+function buildCustomApiUrl(baseUrl: string, path: string, query?: Record<string, unknown>) {
+  if (!baseUrl) return path;
+
+  const normalizedBase = baseUrl.replace(/\/+$/, '');
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  const url = new URL(`${normalizedBase}${normalizedPath}`);
+
+  if (query && typeof query === 'object') {
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined || value === null) continue;
+      url.searchParams.set(key, String(value));
+    }
+  }
+
+  return url.toString();
+}
+
+async function resolveCredentialPlaceholders(value: unknown, tenantId: string): Promise<unknown> {
+  if (typeof value === 'string') {
+    // Suporta {{chave}} (padrão técnico) e {chave} (formato natural do LLM)
+    const matches = Array.from(value.matchAll(/\{\{([a-z0-9_]+)\}\}|\{([a-z0-9_]+)\}/gi));
+    if (matches.length === 0) return value;
+
+    let resolved = value;
+    const { settingsService } = await import('../settings.service.js');
+
+    for (const match of matches) {
+      const key = match[1] || match[2]; // match[1] = {{key}}, match[2] = {key}
+      const secret = await settingsService.get(tenantId, key);
+      if (!secret) {
+        throw new Error(`Credencial "${key}" não configurada. Vá em Configurações e adicione a chave "${key}".`);
+      }
+      resolved = resolved.replace(match[0], secret);
+    }
+
+    return resolved;
+  }
+
+  if (Array.isArray(value)) {
+    return Promise.all(value.map((item) => resolveCredentialPlaceholders(item, tenantId)));
+  }
+
+  if (value && typeof value === 'object') {
+    const entries = await Promise.all(
+      Object.entries(value as Record<string, unknown>).map(async ([key, entryValue]) => [
+        key,
+        await resolveCredentialPlaceholders(entryValue, tenantId)
+      ] as const)
+    );
+    return Object.fromEntries(entries);
+  }
+
+  return value;
 }
 
 // ── Handlers de Skills ──
 
 const SKILL_HANDLERS: Record<string, (args: any, ctx: SkillContext) => Promise<string>> = {
+
+  upload_image: async (args, ctx) => {
+    const apiKey = ctx.credentials.imgbb_api_key;
+    if (!apiKey) return 'ImgBB API Key nao configurada.';
+
+    const imageBase64 = String(args.image_base64 || '').trim();
+    if (!imageBase64) return 'image_base64 e obrigatorio.';
+
+    const normalizedBase64 = imageBase64.replace(/^data:[^;]+;base64,/, '');
+    const formData = new FormData();
+    formData.set('key', apiKey);
+    formData.set('image', normalizedBase64);
+    if (args.filename) formData.set('name', String(args.filename));
+
+    try {
+      const response = await fetch('https://api.imgbb.com/1/upload', {
+        method: 'POST',
+        body: formData,
+        signal: AbortSignal.timeout(20000),
+      });
+
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.success || !data?.data?.url) {
+        return `Erro ao fazer upload da imagem: ${data?.error?.message || response.statusText || 'falha desconhecida'}`;
+      }
+
+      return JSON.stringify({
+        url: data.data.url,
+        delete_url: data.data.delete_url,
+        width: data.data.width,
+        height: data.data.height,
+      });
+    } catch (error: any) {
+      return `Erro ao fazer upload da imagem: ${error.message}`;
+    }
+  },
+
+  instagram_publish: async (args, ctx) => {
+    const accessToken = ctx.credentials.instagram_access_token;
+    const userId = ctx.credentials.instagram_user_id;
+    if (!accessToken || !userId) {
+      return 'Credenciais do Instagram nao configuradas. Salve instagram_access_token e instagram_user_id.';
+    }
+
+    const type = String(args.type || '').trim();
+    const caption = String(args.caption || '').trim();
+    const imageUrls = Array.isArray(args.image_urls)
+      ? args.image_urls.map((url: unknown) => String(url || '').trim()).filter(Boolean)
+      : [];
+
+    if (!type || !caption || imageUrls.length === 0) {
+      return 'Campos obrigatorios: type, caption e image_urls.';
+    }
+
+    if (!['post', 'carousel', 'story'].includes(type)) {
+      return `Tipo "${type}" nao suportado. Use post, carousel ou story.`;
+    }
+
+    const baseUrl = 'https://graph.facebook.com/v21.0';
+
+    async function graphRequest(path: string, payload: Record<string, unknown>) {
+      const formData = new URLSearchParams();
+      for (const [key, value] of Object.entries(payload)) {
+        if (value !== undefined && value !== null) {
+          formData.set(key, String(value));
+        }
+      }
+
+      const response = await fetch(`${baseUrl}/${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: formData.toString(),
+        signal: AbortSignal.timeout(20000),
+      });
+
+      const data = await response.json().catch(() => null);
+      if (!response.ok || data?.error) {
+        const errorMessage = data?.error?.message || response.statusText || 'erro desconhecido';
+        throw new Error(errorMessage);
+      }
+
+      return data;
+    }
+
+    try {
+      if (type === 'story') {
+        if (imageUrls.length !== 1) return 'Story exige exatamente 1 image_url.';
+
+        const createRes = await graphRequest(`${userId}/media`, {
+          media_type: 'STORIES',
+          image_url: imageUrls[0],
+          access_token: accessToken,
+        });
+
+        const publishRes = await graphRequest(`${userId}/media_publish`, {
+          creation_id: createRes.id,
+          access_token: accessToken,
+        });
+
+        return `Story publicada com sucesso no Instagram. Media ID: ${publishRes.id}`;
+      }
+
+      if (type === 'post') {
+        if (imageUrls.length !== 1) return 'Post simples exige exatamente 1 image_url.';
+
+        const createRes = await graphRequest(`${userId}/media`, {
+          image_url: imageUrls[0],
+          caption,
+          access_token: accessToken,
+        });
+
+        const publishRes = await graphRequest(`${userId}/media_publish`, {
+          creation_id: createRes.id,
+          access_token: accessToken,
+        });
+
+        return `Post publicado com sucesso no Instagram. Media ID: ${publishRes.id}`;
+      }
+
+      if (imageUrls.length < 2 || imageUrls.length > 10) {
+        return 'Carrossel exige entre 2 e 10 image_urls.';
+      }
+
+      const containerIds: string[] = [];
+      for (const imageUrl of imageUrls) {
+        const mediaRes = await graphRequest(`${userId}/media`, {
+          image_url: imageUrl,
+          is_carousel_item: 'true',
+          access_token: accessToken,
+        });
+        if (!mediaRes?.id) throw new Error('Falha ao criar container do item do carrossel.');
+        containerIds.push(mediaRes.id);
+      }
+
+      const carouselRes = await graphRequest(`${userId}/media`, {
+        media_type: 'CAROUSEL',
+        children: containerIds.join(','),
+        caption,
+        access_token: accessToken,
+      });
+
+      const publishRes = await graphRequest(`${userId}/media_publish`, {
+        creation_id: carouselRes.id,
+        access_token: accessToken,
+      });
+
+      return `Carrossel publicado com sucesso no Instagram com ${containerIds.length} imagens. Media ID: ${publishRes.id}`;
+    } catch (error: any) {
+      logger.error('instagram_publish', 'Falha ao publicar no Instagram', error.message);
+      return `Erro ao publicar no Instagram: ${error.message}`;
+    }
+  },
 
   // ── Send Buttons: retorna texto com marcação de botões ──
   send_buttons: async (args) => {
@@ -119,28 +505,37 @@ const SKILL_HANDLERS: Record<string, (args: any, ctx: SkillContext) => Promise<s
   },
 
   // ── Call API: chama APIs externas ──
-  call_api: async (args) => {
+  call_api: async (args, ctx) => {
     const { method, url, headers, body } = args;
     if (!url || !method) return 'URL e método são obrigatórios.';
 
+    const resolvedUrl = String(await resolveCredentialPlaceholders(String(url), ctx.tenantId));
+    const resolvedHeaders = await resolveCredentialPlaceholders(headers || {}, ctx.tenantId) as Record<string, string>;
+    const resolvedBody = await resolveCredentialPlaceholders(body || null, ctx.tenantId);
+
     // Segurança: bloqueia localhost/IPs internos
-    if (url.match(/localhost|127\.0\.0|10\.|192\.168\.|172\.(1[6-9]|2|3[01])\./)) {
+    if (resolvedUrl.match(/localhost|127\.0\.0|10\.|192\.168\.|172\.(1[6-9]|2|3[01])\./)) {
       return 'Bloqueado: não é permitido acessar endereços internos/localhost.';
     }
 
     try {
       const fetchOptions: any = {
         method,
-        headers: { 'Content-Type': 'application/json', ...(headers || {}) },
+        headers: { 'Content-Type': 'application/json', ...(resolvedHeaders || {}) },
         signal: AbortSignal.timeout(15000),
       };
 
-      if (body && ['POST', 'PUT', 'PATCH'].includes(method)) {
-        fetchOptions.body = JSON.stringify(body);
+      let finalBody = resolvedBody;
+      if (typeof finalBody === 'string') {
+        try { finalBody = JSON.parse(finalBody); } catch (e) {}
       }
 
-      logger.info('call_api', `${method} ${url}`);
-      const res = await fetch(url, fetchOptions);
+      if (finalBody && ['POST', 'PUT', 'PATCH'].includes(method)) {
+        fetchOptions.body = JSON.stringify(finalBody);
+      }
+
+      logger.info('call_api', `${method} ${resolvedUrl}`);
+      const res = await fetch(resolvedUrl, fetchOptions);
       const contentType = res.headers.get('content-type') || '';
 
       let responseData: string;
@@ -186,7 +581,19 @@ const SKILL_HANDLERS: Record<string, (args: any, ctx: SkillContext) => Promise<s
       const { settingsService } = await import('../settings.service.js');
       await settingsService.set(ctx.tenantId, credential_key, credential_value, true);
 
-      // Registra como custom skill do agente (visível na aba Personalizadas)
+      // 1. Verifica se a credencial pertence a uma Skill Nativa
+      const { SKILL_CATALOG } = await import('./catalog.js');
+      const nativeSkill = Object.values(SKILL_CATALOG).find((s: any) => 
+        s.credentials?.some((c: any) => c.key === credential_key)
+      );
+
+      if (nativeSkill) {
+        await SkillRegistry.activate(ctx.tenantId, ctx.agentId, nativeSkill.id);
+        logger.info('self_configure', `Agente ${ctx.agentId} ativou nativa ${nativeSkill.id} via save_credential`);
+        return `✅ Credencial nativa "${credential_key}" salva no Cofre. A Skill "${nativeSkill.name}" foi automaticamente ativada com sucesso! Responda o que pode fazer agora com essa integração instalada.`;
+      }
+
+      // 2. Se não for nativa, cria uma Integração Customizada genérica (API REST)
       const apiName = credential_key
         .replace(/_api_key$|_key$|_secret$|_token$/i, '')
         .replace(/_/g, ' ')
@@ -206,8 +613,8 @@ const SKILL_HANDLERS: Record<string, (args: any, ctx: SkillContext) => Promise<s
         },
       });
 
-      logger.info('self_configure', `Agente ${ctx.agentId} salvou credencial: ${credential_key}`);
-      return `✅ Credencial "${credential_key}" salva com segurança no vault do workspace.`;
+      logger.info('self_configure', `Agente ${ctx.agentId} salvou credencial e ativou custom api: ${credential_key}`);
+      return `✅ Credencial "${credential_key}" salva com segurança no vault do workspace como API Customizada.`;
     }
 
     return `Ação "${action}" não reconhecida. Use: update_soul, install_skill ou save_credential.`;
@@ -416,6 +823,52 @@ const SKILL_HANDLERS: Record<string, (args: any, ctx: SkillContext) => Promise<s
     }
 
     return 'Credenciais insuficientes. Configure smtp_host + smtp_user + smtp_pass.';
+  },
+
+  // ── Brevo Marketing ──
+  brevo_marketing: async (args, ctx) => {
+    let key: string | null | undefined = ctx.credentials.brevo_api_key;
+    if (!key) {
+      const { settingsService } = await import('../settings.service.js');
+      key = await settingsService.get(ctx.tenantId, 'smtp_pass');
+    }
+    if (!key) return 'Brevo API Key não configurada.';
+
+    const headers = { 'api-key': String(key), 'Content-Type': 'application/json' };
+    const baseUrl = 'https://api.brevo.com/v3';
+
+    try {
+      if (args.action === 'list_lists') {
+        const res = await fetch(`${baseUrl}/contacts/lists?limit=50`, { headers, signal: AbortSignal.timeout(10000) });
+        return JSON.stringify(await res.json());
+      }
+      if (args.action === 'list_contacts') {
+        const res = await fetch(`${baseUrl}/contacts?limit=50`, { headers, signal: AbortSignal.timeout(10000) });
+        return JSON.stringify(await res.json());
+      }
+      if (args.action === 'add_contact') {
+        if (!args.email) return 'Email é obrigatório para add_contact.';
+        const payload = {
+          email: args.email,
+          updateEnabled: true,
+          ...(args.listIds && { listIds: args.listIds }),
+          ...(args.attributes && { attributes: args.attributes })
+        };
+        const res = await fetch(`${baseUrl}/contacts`, { method: 'POST', headers, body: JSON.stringify(payload), signal: AbortSignal.timeout(10000) });
+        if ([200, 201, 204].includes(res.status)) return `Contato ${args.email} adicionado/atualizado.`;
+        return `Erro ao adicionar: ${await res.text()}`;
+      }
+      if (args.action === 'update_contact') {
+        if (!args.email) return 'Email é obrigatório para update_contact.';
+        const payload = { ...(args.listIds && { listIds: args.listIds }), ...(args.attributes && { attributes: args.attributes }) };
+        const res = await fetch(`${baseUrl}/contacts/${encodeURIComponent(args.email)}`, { method: 'PUT', headers, body: JSON.stringify(payload), signal: AbortSignal.timeout(10000) });
+        if ([200, 201, 204].includes(res.status)) return `Contato ${args.email} atualizado.`;
+        return `Erro ao atualizar: ${await res.text()}`;
+      }
+      return `Ação "${args.action}" não reconhecida.`;
+    } catch (e: any) {
+      return `Erro na integração Brevo: ${e.message}`;
+    }
   },
 
   // ── Stripe ──
@@ -709,4 +1162,334 @@ const SKILL_HANDLERS: Record<string, (args: any, ctx: SkillContext) => Promise<s
 
     return `Ação "${args.action}" do Notion não implementada.`;
   },
+
+  // ── Proatividade: Heartbeat (auto-melhoria) ──
+
+  activate_heartbeat: async (args, ctx) => {
+    const { frequency = 'daily', focus = 'geral' } = args;
+
+    const schedule = frequency === 'weekly' ? '0 8 * * 1' : '0 8 * * *';
+    const label = frequency === 'weekly' ? 'toda segunda-feira às 08:00' : 'todo dia às 08:00';
+
+    const prompt = `[HEARTBEAT — AUTO-MELHORIA]
+Você está fazendo sua revisão proativa de qualidade. Execute os seguintes passos:
+
+1. REVISÃO: Use knowledge_search("heartbeat revisão") para ver suas anotações anteriores.
+2. PADRÕES: Analise as últimas interações — há perguntas repetidas que indicam uma lacuna sua?
+3. MELHORIA: Identifique 1 coisa concreta que você pode fazer melhor no foco: "${focus}".
+4. REGISTRO: Use memory_save para anotar o que aprendeu nesta revisão (chave: "heartbeat_insight").
+5. PROATIVO: Se identificou algo importante, prepare uma mensagem para o usuário na próxima conversa.
+
+Seja direto e prático. Este é seu momento de evoluir.`;
+
+    // Verifica se já existe um heartbeat
+    const existing = await prisma.agentCronJob.findFirst({
+      where: { tenantId: ctx.tenantId, agentId: ctx.agentId, name: { contains: 'Heartbeat' } },
+    });
+
+    if (existing) {
+      await prisma.agentCronJob.update({
+        where: { id: existing.id },
+        data: { schedule, prompt, enabled: true },
+      });
+
+      const { CronService } = await import('../cron.service.js');
+      await CronService.reload();
+
+      return `✅ Heartbeat **atualizado** para ${label}!\n\nFoco: "${focus}"\nAnterior: "${existing.name}" (${existing.schedule}) → agora ${schedule}\n\nEu serei notificado automaticamente no próximo ciclo para revisar meu desempenho e melhorar meu atendimento.`;
+    }
+
+    await prisma.agentCronJob.create({
+      data: {
+        tenantId: ctx.tenantId,
+        agentId: ctx.agentId,
+        name: `💓 Heartbeat — Auto-melhoria (${focus})`,
+        prompt,
+        schedule,
+        timezone: 'America/Sao_Paulo',
+        enabled: true,
+      },
+    });
+
+    const { CronService } = await import('../cron.service.js');
+    await CronService.reload();
+
+    return `✅ **Modo Proativo ativado!** Heartbeat configurado para ${label}.\n\nFoco: "${focus}"\nO que vai acontecer:\n- Às 08:00 (${frequency === 'weekly' ? 'toda segunda' : 'todo dia'}), eu farei uma auto-revisão silenciosa\n- Vou analisar padrões das nossas conversas e identificar como melhorar\n- Memórias importantes serão salvas para eu evoluir entre conversas\n\nAlém disso, daqui para frente vou sempre sugerir próximos passos ao final de cada resposta relevante. 🦞`;
+  },
+
+  // ── Squad & Workflow (Colaboração Autônoma) ──
+
+  run_squad: async (args, ctx) => {
+    const { task } = args;
+    if (!task || !task.trim()) {
+      return 'Descreva a tarefa que a squad deve executar.';
+    }
+
+
+    try {
+      const { AgentSquadService } = await import('../agent-squad.service.js');
+      const squad = await AgentSquadService.getAgentSquad(ctx.tenantId, ctx.agentId);
+
+      if (!squad) {
+        return 'Você ainda não tem uma squad configurada. Crie um agente e adicione-o à sua squad com `/squad add <nome>` ou pelo painel web em Agentes.';
+      }
+
+      const members = squad.members.filter((m: any) => m.role !== 'leader');
+      if (members.length === 0) {
+        return 'Sua squad ainda não tem membros além de você mesmo. Adicione especialistas com `/squad add <nome>` ou pelo painel web.';
+      }
+
+      // Notifica o usuário enquanto executa (o handler retorna o resultado final)
+      const result = await AgentSquadService.execute(ctx.tenantId, ctx.agentId, task.trim());
+      return result;
+    } catch (err: any) {
+      console.error('[Skill:run_squad] Erro:', err.message);
+      return `Erro ao acionar a squad: ${err.message}`;
+    }
+  },
+
+  run_workflow: async (args, ctx) => {
+    const { workflow_name, input } = args;
+    if (!workflow_name || !workflow_name.trim()) {
+      return 'Informe o nome do workflow que deseja disparar.';
+    }
+
+    try {
+      const workflow = await prisma.workflow.findFirst({
+        where: {
+          tenantId: ctx.tenantId,
+          name: { contains: workflow_name.trim(), mode: 'insensitive' },
+          status: 'active',
+        },
+      });
+
+      if (!workflow) {
+        return `Workflow "${workflow_name}" não encontrado ou inativo. Verifique o nome no canvas de Workflows e certifique-se que está com status ativo.`;
+      }
+
+      const { WorkflowRunnerService } = await import('../workflow-runner.service.js');
+      const run = await WorkflowRunnerService.triggerWorkflow(
+        ctx.tenantId,
+        workflow.id,
+        { triggeredBy: 'agent_skill', agentId: ctx.agentId, input: input || '' }
+      );
+
+      return `✅ Workflow **"${workflow.name}"** disparado com sucesso!\nID da execução: \`${run.id.slice(0, 8)}...\`\n\nAcompanhe o progresso no painel de Workflows.`;
+    } catch (err: any) {
+      console.error('[Skill:run_workflow] Erro:', err.message);
+      return `Erro ao disparar o workflow: ${err.message}`;
+    }
+  },
+
+  // ── EMAIL: IMAP (Leitura) ──
+  email_check: async (args, ctx) => {
+    const { settingsService } = await import('../settings.service.js');
+    const imapHost = await settingsService.get(ctx.tenantId, 'email_imap_host');
+    const imapPort = parseInt(await settingsService.get(ctx.tenantId, 'email_imap_port') || '993');
+    const user = await settingsService.get(ctx.tenantId, 'email_user');
+    const pass = await settingsService.get(ctx.tenantId, 'email_pass');
+
+    if (!imapHost || !user || !pass) {
+      return 'Credenciais de e-mail IMAP não configuradas. Acesse Configurações do agente e preencha: email_imap_host, email_user e email_pass.';
+    }
+
+    const limit = Math.min(Number(args.limit) || 5, 20);
+    const onlyUnread = Boolean(args.only_unread);
+    const searchFrom = args.search_from ? String(args.search_from) : null;
+    const searchSubject = args.search_subject ? String(args.search_subject) : null;
+
+    try {
+      // Conecta via IMAP puro com TLS (sem dependência externa)
+      const { createConnection } = await import('net');
+      const { connect: tlsConnect } = await import('tls');
+
+      const emails: { from: string; subject: string; date: string; body: string; uid: number }[] = [];
+
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Timeout IMAP (20s)')), 20000);
+
+        const socket = tlsConnect({ host: imapHost, port: imapPort, rejectUnauthorized: false }, () => {
+          let buffer = '';
+          let uid = 1;
+          let step = 0;
+
+          const send = (cmd: string) => socket.write(cmd + '\r\n');
+
+          socket.on('data', (chunk: Buffer) => {
+            buffer += chunk.toString();
+            const lines = buffer.split('\r\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              // Login
+              if (step === 0 && line.includes('* OK')) {
+                step = 1;
+                send(`A001 LOGIN "${user}" "${pass}"`);
+              } else if (step === 1 && line.includes('A001 OK')) {
+                step = 2;
+                send('A002 SELECT INBOX');
+              } else if (step === 2 && line.includes('A002 OK')) {
+                step = 3;
+                const criteria = onlyUnread ? 'UNSEEN' : 'ALL';
+                send(`A003 SEARCH ${criteria}`);
+              } else if (step === 3 && line.startsWith('* SEARCH')) {
+                step = 4;
+                const uids = line.replace('* SEARCH', '').trim().split(' ').filter(Boolean).map(Number);
+                const fetchUids = uids.slice(-limit).join(',');
+                if (!fetchUids) { send('A004 LOGOUT'); return; }
+                send(`A004 FETCH ${fetchUids} (BODY[HEADER.FIELDS (FROM SUBJECT DATE)] BODY[TEXT])`);
+              } else if (step === 4) {
+                // Parse rudimentar de FETCH response
+                const fromMatch = line.match(/^From:\s*(.+)/i);
+                const subjMatch = line.match(/^Subject:\s*(.+)/i);
+                const dateMatch = line.match(/^Date:\s*(.+)/i);
+
+                if (fromMatch) { if (!emails[emails.length - 1] || emails[emails.length - 1].body !== '') emails.push({ from: fromMatch[1].trim(), subject: '', date: '', body: '', uid: uid++ }); else emails[emails.length - 1].from = fromMatch[1].trim(); }
+                if (subjMatch && emails.length > 0) emails[emails.length - 1].subject = subjMatch[1].trim();
+                if (dateMatch && emails.length > 0) emails[emails.length - 1].date = dateMatch[1].trim();
+                if (line === '' && emails.length > 0 && emails[emails.length - 1].body === '') { /* next line is body */ }
+
+                if (line.includes('A004 OK')) { send('A005 LOGOUT'); }
+              } else if (line.includes('A005 OK') || line.includes('BYE')) {
+                clearTimeout(timeout);
+                socket.destroy();
+                resolve();
+              }
+            }
+          });
+
+          socket.on('error', (err: Error) => { clearTimeout(timeout); reject(err); });
+        });
+
+        socket.on('error', (err: Error) => { clearTimeout(timeout); reject(err); });
+      });
+
+      // Aplica filtros locais
+      let filtered = emails;
+      if (searchFrom) filtered = filtered.filter(e => e.from.toLowerCase().includes(searchFrom.toLowerCase()));
+      if (searchSubject) filtered = filtered.filter(e => e.subject.toLowerCase().includes(searchSubject.toLowerCase()));
+
+      if (filtered.length === 0) return 'Nenhum e-mail encontrado com os critérios informados.';
+
+      const result = filtered.map((e, i) =>
+        `📧 **E-mail ${i + 1}**\n👤 De: ${e.from}\n📋 Assunto: ${e.subject || '(sem assunto)'}\n📅 Data: ${e.date || 'desconhecida'}`
+      ).join('\n\n---\n\n');
+
+      return `Encontrei **${filtered.length} e-mail(s)**:\n\n${result}`;
+    } catch (err: any) {
+      console.error('[Skill:email_check] Erro:', err.message);
+      return `Erro ao conectar ao servidor IMAP: ${err.message}. Verifique se o host (${imapHost}:${imapPort}), usuário e senha estão corretos. Para Gmail, use uma "Senha de App" (não a senha normal).`;
+    }
+  },
+
+  // ── CLIMA: Google Weather API (com fallback Open-Meteo) ──
+  weather_check: async (args, ctx) => {
+    const location = String(args.location || '').trim();
+    const units = args.units === 'imperial' ? 'fahrenheit' : 'celsius';
+    if (!location) return 'Localização obrigatória. Exemplo: "São Paulo, BR"';
+
+    const googleKey = ctx.credentials.google_api_key;
+
+    try {
+      // Tenta primeiro via Google Geocoding + Open-Meteo (gratuito + preciso)
+      const geoUrl = googleKey
+        ? `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(location)}&key=${googleKey}`
+        : `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(location)}&format=json&limit=1`;
+
+      const geoRes = await fetch(geoUrl, { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': 'LumiPlus/1.0' } });
+      const geoData = await geoRes.json();
+
+      let lat: number, lon: number, displayName: string;
+
+      if (googleKey && geoData.results?.[0]) {
+        lat = geoData.results[0].geometry.location.lat;
+        lon = geoData.results[0].geometry.location.lng;
+        displayName = geoData.results[0].formatted_address;
+      } else if (geoData[0]) {
+        lat = parseFloat(geoData[0].lat);
+        lon = parseFloat(geoData[0].lon);
+        displayName = geoData[0].display_name.split(',').slice(0, 2).join(',').trim();
+      } else {
+        return `Não foi possível encontrar a localização "${location}". Tente um nome mais específico (ex: "São Paulo, BR").`;
+      }
+
+      // Open-Meteo: gratuito, preciso, sem API key
+      const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,wind_direction_10m&daily=temperature_2m_max,temperature_2m_min,weather_code&temperature_unit=${units}&wind_speed_unit=kmh&timezone=auto&forecast_days=3`;
+      const weatherRes = await fetch(weatherUrl, { signal: AbortSignal.timeout(8000) });
+      const w = await weatherRes.json();
+
+      const current = w.current;
+      const daily = w.daily;
+
+      const wmoDescriptions: Record<number, string> = {
+        0: '☀️ Céu limpo', 1: '🌤️ Principalmente limpo', 2: '⛅ Parcialmente nublado', 3: '☁️ Encoberto',
+        45: '🌫️ Neblina', 48: '🌫️ Neblina com gelo', 51: '🌦️ Chuvisco leve', 53: '🌦️ Chuvisco moderado',
+        61: '🌧️ Chuva leve', 63: '🌧️ Chuva moderada', 65: '🌧️ Chuva forte',
+        71: '🌨️ Neve leve', 73: '🌨️ Neve moderada', 75: '🌨️ Neve forte',
+        80: '🌦️ Pancadas leves', 81: '🌦️ Pancadas moderadas', 82: '⛈️ Pancadas fortes',
+        95: '⛈️ Tempestade', 99: '⛈️ Tempestade com granizo',
+      };
+
+      const cond = wmoDescriptions[current.weather_code] || `Código ${current.weather_code}`;
+      const unit = units === 'celsius' ? '°C' : '°F';
+
+      const forecastLines = daily.time.slice(0, 3).map((date: string, i: number) => {
+        const dayName = i === 0 ? 'Hoje' : i === 1 ? 'Amanhã' : new Date(date).toLocaleDateString('pt-BR', { weekday: 'short' });
+        const dayDesc = wmoDescriptions[daily.weather_code[i]] || '';
+        return `  ${dayName}: ${daily.temperature_2m_min[i].toFixed(0)}${unit} ~ ${daily.temperature_2m_max[i].toFixed(0)}${unit} ${dayDesc}`;
+      }).join('\n');
+
+      return `🌍 **Clima em ${displayName}**
+
+🌡️ **Temperatura:** ${current.temperature_2m.toFixed(1)}${unit} (Sensátion: ${current.apparent_temperature.toFixed(1)}${unit})
+${cond}
+💧 **Umidade:** ${current.relative_humidity_2m}%
+💨 **Vento:** ${current.wind_speed_10m.toFixed(1)} km/h
+
+**📅 Previsão (3 dias):**
+${forecastLines}`;
+    } catch (err: any) {
+      console.error('[Skill:weather_check] Erro:', err.message);
+      return `Erro ao buscar dados climáticos: ${err.message}`;
+    }
+  },
+
+  // ── DEEP RESEARCH: Orquestrador de pesquisa profunda ──
+  deep_research: async (args, ctx) => {
+    const topic = String(args.topic || '').trim();
+    const researchType = args.research_type || 'general';
+    const depth = args.depth || 'standard';
+
+    if (!topic) return 'Tópico de pesquisa obrigatório.';
+
+    const typeContext: Record<string, string> = {
+      competitive: 'Análise competitiva: SWOT, posicionamento, preços e features dos concorrentes.',
+      market: 'Pesquisa de mercado: TAM/SAM/SOM, tendências, players e oportunidades.',
+      technical: 'Análise técnica: estado da arte, viabilidade, arquiteturas e benchmarks.',
+      academic: 'Pesquisa acadêmica: síntese de papers, metodologias e conclusões principais.',
+      due_diligence: 'Due diligence: histórico, riscos, conformidade e saúde financeira.',
+      general: 'Pesquisa geral: definição, contexto, tendências e implicações.',
+    };
+
+    const depthContext: Record<string, string> = {
+      quick: '3 pontos principais + uma recomendação. Máximo 200 palavras.',
+      standard: 'Relatório completo com todas as seções do formato padrão. 500-800 palavras.',
+      deep: 'Análise exaustiva multi-fonte. Explore sub-tópicos, use múltiplos ângulos. 1000+ palavras com citações.',
+    };
+
+    return `🔬 **Iniciando Deep Research: "${topic}"**
+
+📋 **Tipo:** ${typeContext[researchType]}
+📊 **Profundidade:** ${depthContext[depth]}
+
+**Plano de pesquisa:**
+1. Buscar fontes primárias sobre o tema
+2. Identificar dados e estatísticas relevantes
+3. Analisar múltiplas perspectivas
+4. Sintetizar em relatório estruturado
+
+---
+**Instruções para o Agente:** Execute agora as buscas com web_search e scrape_url usando o tópico "${topic}" como foco. Após coletar as informações, estruture o relatório no formato: 📋 SUMÁRIO EXECUTIVO → 🔍 METODOLOGIA → 📊 PRINCIPAIS ACHADOS → 🧠 ANÁLISE → ⚠️ RISCOS → ✅ RECOMENDAÇÕES. Nível de profundidade: ${depth}.`;
+  },
+
 };

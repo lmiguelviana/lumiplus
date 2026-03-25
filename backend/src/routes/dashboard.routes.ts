@@ -180,6 +180,10 @@ export async function dashboardRoutes(server: FastifyInstance) {
       });
 
       // Auto-criar squad padrão do agente
+      const { SkillRegistry } = await import('../services/skills/registry.js');
+      await SkillRegistry.activateDefaults(tenantId, agent.id).catch(e => {
+        console.warn('[Dashboard] Falha ao ativar skills padrao:', e.message);
+      });
       const { AgentSquadService } = await import('../services/agent-squad.service.js');
       await AgentSquadService.createDefaultSquad(tenantId, agent.id, agent.name).catch(e => {
         console.warn('[Dashboard] Falha ao criar squad padrão:', e.message);
@@ -230,6 +234,7 @@ export async function dashboardRoutes(server: FastifyInstance) {
 
     // Ativar skills do template
     const { SkillRegistry } = await import('../services/skills/registry.js');
+    await SkillRegistry.activateDefaults(tenantId, agent.id).catch(() => {});
     for (const skillId of template.skills) {
       await SkillRegistry.activate(tenantId, agent.id, skillId).catch(() => {});
     }
@@ -299,6 +304,7 @@ export async function dashboardRoutes(server: FastifyInstance) {
 
     // Skills
     const { SkillRegistry } = await import('../services/skills/registry.js');
+    await SkillRegistry.activateDefaults(tenantId, agent.id).catch(() => {});
     for (const skillId of (data.skills || [])) {
       await SkillRegistry.activate(tenantId, agent.id, skillId).catch(() => {});
     }

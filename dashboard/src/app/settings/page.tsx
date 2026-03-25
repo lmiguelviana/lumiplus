@@ -211,6 +211,7 @@ export default function SettingsPage() {
                 style={{ borderRadius: 0 }}
               >
                 <option value="openrouter">OpenRouter — Gateway Universal (+300 modelos)</option>
+                <option value="nvidia">NVIDIA NIM — Kimi K2.5, Llama 3.1 Nemotron</option>
                 <option value="anthropic">Anthropic — Claude (Opus, Sonnet, Haiku)</option>
                 <option value="google">Google — Gemini (2.5 Flash/Pro)</option>
                 <option value="openai">OpenAI — GPT (4o, O3, O4)</option>
@@ -250,6 +251,23 @@ export default function SettingsPage() {
                       <option value="moonshotai/kimi-k2:free">Kimi K2 (Gratis)</option>
                       <option value="deepseek/deepseek-chat-v3-0324:free">DeepSeek V3 (Gratis)</option>
                       <option value="mistralai/mistral-small-3.1-24b:free">Mistral Small (Gratis)</option>
+                    </optgroup>
+                  </>
+                )}
+                {(settings['ai_provider']) === 'nvidia' && (
+                  <>
+                    <optgroup label="Multimodal Agentic">
+                      <option value="moonshotai/kimi-k2.5">Kimi K2.5 — 1T params, Thinking Mode</option>
+                    </optgroup>
+                    <optgroup label="Llama NIM">
+                      <option value="meta/llama-3.1-405b-instruct">Llama 3.1 405B Instruct</option>
+                      <option value="meta/llama-3.1-70b-instruct">Llama 3.1 70B Instruct</option>
+                      <option value="meta/llama-3.1-8b-instruct">Llama 3.1 8B Instruct</option>
+                      <option value="nvidia/llama-3.1-nemotron-70b-instruct">Nemotron 70B Instruct</option>
+                    </optgroup>
+                    <optgroup label="Mistral NIM">
+                      <option value="mistralai/mistral-large-2-instruct">Mistral Large 2 Instruct</option>
+                      <option value="mistralai/mixtral-8x22b-instruct-v0.1">Mixtral 8x22B Instruct</option>
                     </optgroup>
                   </>
                 )}
@@ -309,6 +327,7 @@ export default function SettingsPage() {
                     >
                       <option value="">— Desativado —</option>
                       <option value="openrouter">OpenRouter</option>
+                      <option value="nvidia">NVIDIA NIM</option>
                       <option value="anthropic">Anthropic</option>
                       <option value="google">Google</option>
                       <option value="openai">OpenAI</option>
@@ -335,6 +354,14 @@ export default function SettingsPage() {
                           <option value="google/gemini-2.0-flash-exp:free">Gemini Flash (Gratis)</option>
                           <option value="meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 (Gratis)</option>
                           <option value="qwen/qwen3-235b-a22b:free">Qwen3 (Gratis)</option>
+                        </>
+                      )}
+                      {(val.split('|')[0] || '') === 'nvidia' && (
+                        <>
+                          <option value="moonshotai/kimi-k2.5">Kimi K2.5 (Thinking)</option>
+                          <option value="meta/llama-3.1-70b-instruct">Llama 3.1 70B</option>
+                          <option value="nvidia/llama-3.1-nemotron-70b-instruct">Nemotron 70B</option>
+                          <option value="mistralai/mistral-large-2-instruct">Mistral Large 2</option>
                         </>
                       )}
                       {(val.split('|')[0]) === 'anthropic' && (
@@ -402,23 +429,28 @@ export default function SettingsPage() {
             <div className="pt-2 border-t border-border-strong">
               {renderKeyField(
                 (settings['ai_provider'] || 'openrouter') === 'openrouter' ? 'openrouter_key' :
+                (settings['ai_provider']) === 'nvidia' ? 'nvidia_nim_key' :
                 (settings['ai_provider']) === 'anthropic' ? 'anthropic_key' :
                 (settings['ai_provider']) === 'google' ? 'google_ai_key' :
                 (settings['ai_provider']) === 'openai' ? 'openai_key' :
                 (settings['ai_provider']) === 'deepseek' ? 'deepseek_key' : 'openrouter_key',
 
                 (settings['ai_provider'] || 'openrouter') === 'openrouter' ? 'OpenRouter API Key' :
+                (settings['ai_provider']) === 'nvidia' ? 'NVIDIA NIM API Key' :
                 (settings['ai_provider']) === 'anthropic' ? 'Anthropic API Key' :
                 (settings['ai_provider']) === 'google' ? 'Google AI Key' :
                 (settings['ai_provider']) === 'openai' ? 'OpenAI API Key' :
                 (settings['ai_provider']) === 'deepseek' ? 'DeepSeek API Key' : 'API Key',
 
                 (settings['ai_provider'] || 'openrouter') === 'openrouter' ? 'sk-or-v1-...' :
+                (settings['ai_provider']) === 'nvidia' ? 'nvapi-...' :
                 (settings['ai_provider']) === 'anthropic' ? 'sk-ant-...' :
                 (settings['ai_provider']) === 'google' ? 'AIza...' :
                 'sk-...',
 
-                'Cole sua chave de API do provedor selecionado.',
+                (settings['ai_provider']) === 'nvidia'
+                  ? 'Chave da NVIDIA NIM API. Obtenha em build.nvidia.com. Necessaria para Kimi K2.5 e outros modelos NIM.'
+                  : 'Cole sua chave de API do provedor selecionado.',
                 <KeyRound className="w-3.5 h-3.5" />
               )}
             </div>
@@ -440,6 +472,46 @@ export default function SettingsPage() {
 
         {/* Aprovação humana usa o canal do próprio agente (WhatsApp/Telegram/Instagram da página Canais) */}
 
+        <div className="industrial-card">
+          <div className="flex items-center gap-2 mb-1 pb-4 border-b border-border-strong">
+            <AtSign className="w-4 h-4 text-primary" />
+            <h2 className="font-black text-xs uppercase tracking-widest">Instagram Publisher</h2>
+          </div>
+
+          <div className="py-4 space-y-1">
+            {renderKeyField(
+              'instagram_access_token',
+              'Instagram Access Token',
+              'EAAB...',
+              'Token de longa duracao da Instagram Graph API com permissao de publicacao.',
+              <KeyRound className="w-3.5 h-3.5" />
+            )}
+
+            <div className="border-t border-border-strong" />
+
+            {renderKeyField(
+              'instagram_user_id',
+              'Instagram User ID',
+              '1784...',
+              'ID da conta Business ou Creator usada para publicar no feed.',
+              <AtSign className="w-3.5 h-3.5" />
+            )}
+
+            <div className="border-t border-border-strong" />
+
+            {renderKeyField(
+              'imgbb_api_key',
+              'ImgBB API Key',
+              'Sua chave do ImgBB',
+              'Opcional, mas recomendada para subir imagens e gerar URLs publicas antes de publicar.',
+              <Globe className="w-3.5 h-3.5" />
+            )}
+
+            <p className="text-[10px] text-foreground/50 pt-3">
+              Fluxo recomendado: subir a imagem via <strong className="text-foreground/70">upload_image</strong> e depois chamar <strong className="text-foreground/70">instagram_publish</strong>.
+            </p>
+          </div>
+        </div>
       </div>
     </div>
   );

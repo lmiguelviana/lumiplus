@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { env } from '../config/env.js';
 
 const ALGORITHM = 'aes-256-gcm';
-const IV_LENGTH = 16;
+const IV_LENGTH = 12; // Standard for GCM is 12 bytes (96 bits)
 const SALT_LENGTH = 64;
 const TAG_LENGTH = 16;
 const KEY_LEN = 32;
@@ -33,7 +33,7 @@ export class VaultService {
     // Deriva uma chave específica usando pbkdf2 para fortalecer a master key
     const key = crypto.pbkdf2Sync(this.masterKey, salt, 100000, KEY_LEN, 'sha512');
 
-    const cipher = crypto.createCipheriv(ALGORITHM, iv, key);
+    const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
     
     let encrypted = cipher.update(text, 'utf8', 'base64');
     encrypted += cipher.final('base64');
@@ -64,7 +64,7 @@ export class VaultService {
     
     const key = crypto.pbkdf2Sync(this.masterKey, salt, 100000, KEY_LEN, 'sha512');
     
-    const decipher = crypto.createDecipheriv(ALGORITHM, iv, key);
+    const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
     decipher.setAuthTag(tag);
 
     let decrypted = decipher.update(encryptedText, 'base64', 'utf8');

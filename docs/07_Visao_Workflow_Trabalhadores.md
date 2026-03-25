@@ -100,7 +100,8 @@ Hoje o que está pronto: **memória via Knowledge (arquivos .md e escritos)** e 
 | Notificação Telegram/WhatsApp no Human Approval | ⚠️ | UI tem botões; falta enviar mensagem ao pausar (integrar com Telegram/WhatsApp) |
 | Memória (arquivos .md, conhecimento) por agente | ✅ | `KnowledgeService` + `AgentKnowledge`; falta injetar RAG no runner do workflow |
 | Aprendizado (padrões, ficar mais inteligente) | 🔜 | Histórico existe; "padrões aprendidos" pode ser evolução futura |
-| Persistência do canvas em Squad/Workflow no banco | ⚠️ | Ver `docs/fase_atual/20_Squad_Builder_Correcao.md` — conectar canvas_state e triggers ao backend |
+| Persistência do canvas em Squad/Workflow no banco | ✅ | `docs/fase_atual/20_Squad_Builder_Correcao.md` — CRUD completo. |
+| Execução autônoma via Chat (Skills) | ✅ | Skills `run_squad` e `run_workflow` em `catalog.ts`. |
 
 ---
 
@@ -121,6 +122,7 @@ No Lumi Plus, o equivalente runtime é: **agentes cadastrados** = “tipos” (e
 - [x] **Workflow runner:** ao processar nó tipo `agent`, chamar `KnowledgeService.search(tenantId, agentId, query)` e injetar contexto RAG no prompt.
 - [x] **Human Approval:** ao pausar run em `waiting_approval`, se `notifyTelegram`/`notifyWhatsapp` estiverem ativos, enviar mensagem (workspace: `approval_telegram_chat_id`, `approval_whatsapp_jid`).
 - [x] **Canvas real:** GET/PUT `/workflows/:id`; FlowBuilder com `workflow`, `onSaveDefinition`, `onRun`; botão "Disparar Agora" chama `POST /workflows/:id/run`.
+- [x] **Autonomia via Chat:** implementar skills `run_squad` e `run_workflow` para que o agente acione automações e equipes via mensagem natural.
 - [ ] **Documentar** evolução de "aprendizado" (uso de interações para melhorar respostas ou sugerir ajustes de prompt).
 
 ---

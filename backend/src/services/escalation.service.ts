@@ -13,7 +13,6 @@ export class EscalationService {
           agentId,
           contactId,
           reason,
-          context: { snippet: context },
           status: 'pending'
         }
       });

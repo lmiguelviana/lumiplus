@@ -267,7 +267,7 @@ Use learn_from_interaction para registrar. Você não repetirá o mesmo erro.`,
             },
             skill_id: {
               type: 'string',
-              description: 'ID da skill a instalar (usar em action=install_skill). Disponíveis: knowledge_search, call_api, web_search, scrape_url, write_memory, self_improving, inline_buttons, duckduckgo_search, email_send, self_configure',
+              description: 'ID da skill a instalar. Exemplos: brevo_marketing, email_send, instagram_publish, upload_image, google_calendar, google_sheets, trello, stripe_query, run_squad, run_workflow, manage_cron, web_search, clawhub_import',
             },
             credential_key: {
               type: 'string',
@@ -288,16 +288,25 @@ QUANDO agir automaticamente:
 - Usuário enviar uma API key, token ou credencial → use self_configure(action="save_credential") imediatamente
 - Usuário pedir para você instalar uma skill/ferramenta → use self_configure(action="install_skill")
 - Usuário pedir para você mudar sua personalidade, tom ou instruções → use self_configure(action="update_soul")
-- Usuário enviar documentação de uma API → leia (scrape_url ou knowledge_search), salve a credencial e atualize seu soul
+- Usuário enviar documentação de uma API → leia, salve a credencial e atualize seu soul
 
-FLUXO PADRÃO ao receber uma API + documentação:
-1. self_configure(action="save_credential", credential_key="nome_api_key", credential_value="valor")
-2. Leia a documentação se fornecida
-3. self_configure(action="update_soul") com instruções sobre como usar essa API
-4. Confirme ao usuário os passos executados
+⚠️ CATÁLOGO DE SKILLS DISPONÍVEIS PARA INSTALAÇÃO PROATIVA:
+Se o usuário pedir algo que você não consiga fazer nativamente, VERIFIQUE se existe uma skill para isso e OFEREÇA a instalação.
+- "brevo_marketing": Adicionar contatos, consultar listas de email marketing na Brevo.
+- "email_send": Enviar emails SMTP/Brevo/Gmail etc.
+- "instagram_publish": Publicar posts ou carrosseis no Instagram e Facebook.
+- "upload_image": Fazer upload de arquivos em Base64 online (ImgBB).
+- "google_calendar": Agendar, cancelar e buscar reuniões no Google Agenda.
+- "google_sheets": Ler e escrever em planilhas do Google.
+- "trello": Gerenciar quadros, listas e cartões no Trello.
+- "stripe_query": Consultar saldo, pagamentos e clientes no Stripe.
+- "run_squad": Acionar uma equipe de multi-agentes especialistas para uma tarefa complexa.
+- "run_workflow": Desencadear automações e fluxos massivos no canvas visual.
+- "web_search" ou "duckduckgo_search": Consultar internet em tempo real.
+- "manage_cron": Agendar tarefas automáticas e cronjobs na plataforma.
+- "clawhub_import": Baixar integrações e novos agentes do ClawHub.
 
-Sempre use nomes de credencial no formato snake_case (ex: gerarthumbs_api_key, ckato_token).
-Confirme cada ação ao usuário de forma clara e objetiva.`,
+Se oferecer uma skill e o usuário topar, use: self_configure(action="install_skill", skill_id="nome_da_skill"). Se precisar de credencial, peça a ele em seguida. Sempre confirme cada ação ao usuário de forma clara e objetiva.`,
   },
 
   duckduckgo_search: {
@@ -326,6 +335,81 @@ Confirme cada ação ao usuário de forma clara e objetiva.`,
   },
 
   // ── INTEGRAÇÕES ──
+
+  upload_image: {
+    id: 'upload_image',
+    name: 'Upload de Imagem',
+    description: 'Faz upload de uma imagem e retorna uma URL publica para uso em publicacoes.',
+    icon: 'ImageUp',
+    category: 'integration',
+    isDefault: true,
+    credentials: [
+      { key: 'imgbb_api_key', label: 'ImgBB API Key', placeholder: 'Sua chave do ImgBB', required: true },
+    ],
+    tool: {
+      type: 'function',
+      function: {
+        name: 'upload_image',
+        description: 'Faz upload de uma imagem em base64 e retorna uma URL publica',
+        parameters: {
+          type: 'object',
+          properties: {
+            image_base64: { type: 'string', description: 'Imagem em base64, com ou sem prefixo data URL' },
+            filename: { type: 'string', description: 'Nome do arquivo da imagem' },
+          },
+          required: ['image_base64'],
+        },
+      },
+    },
+    systemPromptAddition: 'Voce pode usar upload_image para gerar uma URL publica antes de publicar no Instagram.',
+  },
+
+  instagram_publish: {
+    id: 'instagram_publish',
+    name: 'Instagram Publisher',
+    description: 'Publica posts e carrosseis no Instagram via Graph API.',
+    icon: 'Instagram',
+    category: 'integration',
+    isDefault: true,
+    credentials: [
+      { key: 'instagram_access_token', label: 'Instagram Access Token', placeholder: 'EAAB...', required: true },
+      { key: 'instagram_user_id', label: 'Instagram User ID', placeholder: '1784...', required: true },
+    ],
+    tool: {
+      type: 'function',
+      function: {
+        name: 'instagram_publish',
+        description: 'Publica um post ou carrossel no Instagram',
+        parameters: {
+          type: 'object',
+          properties: {
+            type: {
+              type: 'string',
+              enum: ['post', 'carousel', 'story'],
+              description: 'Tipo da publicacao',
+            },
+            caption: {
+              type: 'string',
+              description: 'Legenda do post com hashtags opcionais',
+            },
+            image_urls: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'URLs publicas das imagens: 1 para post, 2 a 10 para carrossel',
+            },
+          },
+          required: ['type', 'caption', 'image_urls'],
+        },
+      },
+    },
+    systemPromptAddition: `Voce pode publicar conteudo no Instagram usando instagram_publish.
+Antes de publicar:
+1. Garanta que as imagens estejam em URLs publicas
+2. Use 1 imagem para post simples
+3. Use entre 2 e 10 imagens para carrossel
+4. Se a imagem estiver em base64, use upload_image antes
+Nunca invente URLs de imagem; publique apenas quando tiver URLs validas.`,
+  },
 
   google_calendar: {
     id: 'google_calendar',
@@ -456,6 +540,36 @@ Confirme cada ação ao usuário de forma clara e objetiva.`,
       },
     },
     systemPromptAddition: 'Você pode enviar emails usando email_send. Peça confirmação antes de enviar.',
+  },
+
+  brevo_marketing: {
+    id: 'brevo_marketing',
+    name: 'Brevo Marketing',
+    description: 'Gerenciar contatos, listas e automacoes de marketing na Brevo (Sendinblue).',
+    icon: 'Users',
+    category: 'integration',
+    isDefault: false,
+    credentials: [
+      { key: 'brevo_api_key', label: 'Brevo API Key', placeholder: 'xkeysib-...', required: true },
+    ],
+    tool: {
+      type: 'function',
+      function: {
+        name: 'brevo_marketing',
+        description: 'Gerencia marketing na Brevo: contatos, listas, blacklists e envios.',
+        parameters: {
+          type: 'object',
+          properties: {
+            action: { type: 'string', enum: ['add_contact', 'update_contact', 'list_contacts', 'list_lists'], description: 'Acao a ser executada' },
+            email: { type: 'string', description: 'Email do contato' },
+            listIds: { type: 'array', items: { type: 'number' }, description: 'IDs das listas (ex: [10])' },
+            attributes: { type: 'object', description: 'Atributos customizados (ex: {"NOMBRE": "Joao"})' },
+          },
+          required: ['action'],
+        },
+      },
+    },
+    systemPromptAddition: 'Você pode gerenciar contatos e listas do Brevo (antigo Sendinblue) usando brevo_marketing. Respeite sempre regras de unsubscribes.',
   },
 
   stripe_query: {
@@ -615,9 +729,250 @@ Sempre confirme nome, horário e o que será executado antes de criar.`,
 Quando o usuário pedir para instalar ou importar uma skill do ClawhHub, use clawhub_import(url) com a URL fornecida.
 Se o usuário quiser incorporar as instruções ao seu comportamento permanente, use apply_to_soul: true.`,
   },
+
+  // ── COLABORAÇÃO ──
+
+  run_squad: {
+    id: 'run_squad',
+    name: 'Acionar Squad',
+    description: 'Aciona a equipe do agente para executar uma tarefa colaborativa. O líder coordena os membros e entrega o resultado consolidado.',
+    icon: 'Users',
+    category: 'native',
+    isDefault: false,
+    credentials: [],
+    tool: {
+      type: 'function',
+      function: {
+        name: 'run_squad',
+        description: 'Aciona a squad do agente para executar uma tarefa que se beneficia do trabalho em equipe. Cada membro especialista contribui com sua parte e o líder consolida o resultado final.',
+        parameters: {
+          type: 'object',
+          properties: {
+            task: {
+              type: 'string',
+              description: 'Descrição clara e completa da tarefa que a squad deve executar. Seja específico sobre o objetivo e o formato esperado do resultado.',
+            },
+          },
+          required: ['task'],
+        },
+      },
+    },
+    systemPromptAddition: `Você lidera uma squad de agentes especialistas. Use run_squad quando:
+- A tarefa é complexa e se beneficia de múltiplas perspectivas especializadas.
+- O usuário pede explicitamente para usar a equipe ou a squad.
+- A tarefa envolve criar conteúdo que requer pesquisa, escrita E revisão.
+- Você quer entregar um resultado de maior qualidade usando todos os especialistas.
+Não use run_squad para perguntas simples ou tarefas que você mesmo pode resolver com facilidade.`,
+  },
+
+  run_workflow: {
+    id: 'run_workflow',
+    name: 'Disparar Workflow',
+    description: 'Dispara um workflow (fluxo automatizado) criado no canvas visual pelo nome. Útil para automações recorrentes.',
+    icon: 'Play',
+    category: 'native',
+    isDefault: false,
+    credentials: [],
+    tool: {
+      type: 'function',
+      function: {
+        name: 'run_workflow',
+        description: 'Dispara um workflow criado no canvas visual do Lumi Plus. Use quando o usuário pedir para executar, rodar ou iniciar um fluxo automatizado específico pelo nome.',
+        parameters: {
+          type: 'object',
+          properties: {
+            workflow_name: {
+              type: 'string',
+              description: 'Nome do workflow a disparar (não precisa ser exato — o sistema faz busca por similaridade).',
+            },
+            input: {
+              type: 'string',
+              description: 'Contexto ou dados de entrada para o workflow (opcional).',
+            },
+          },
+          required: ['workflow_name'],
+        },
+      },
+    },
+    systemPromptAddition: `Você pode disparar workflows automatizados criados no canvas visual. Use run_workflow quando:
+- O usuário pedir para executar, rodar ou iniciar um fluxo ou automação específica pelo nome.
+- O usuário mencionar que existe um workflow configurado para aquela tarefa.
+Se o usuário não souber o nome exato, peça para ele descrever e tente identificar o fluxo mais próximo.`,
+  },
+
+  // ── PROATIVIDADE ──
+
+  lumi_proactive: {
+    id: 'lumi_proactive',
+    name: 'Modo Proativo (Lumi)',
+    description: 'Transforma o agente em um parceiro proativo: sugere próximos passos, antecipa necessidades e ativa um heartbeat diário para auto-melhoria.',
+    icon: 'Zap',
+    category: 'native',
+    isDefault: false,
+    credentials: [],
+    tool: {
+      type: 'function',
+      function: {
+        name: 'activate_heartbeat',
+        description: 'Ativa o heartbeat diário de auto-melhoria do agente. Cria um CronJob que revisa interações recentes e atualiza o comportamento do agente. Chame esta função UMA única vez quando o usuário pedir para ativar o modo proativo ou configurar o heartbeat.',
+        parameters: {
+          type: 'object',
+          properties: {
+            frequency: {
+              type: 'string',
+              enum: ['daily', 'weekly'],
+              description: 'Frequência do heartbeat. "daily" = todo dia às 08:00. "weekly" = toda segunda às 08:00.',
+            },
+            focus: {
+              type: 'string',
+              description: 'Foco da revisão do heartbeat. Ex: "atendimento ao cliente", "vendas", "suporte técnico". Se não especificado, usa "geral".',
+            },
+          },
+          required: ['frequency'],
+        },
+      },
+    },
+    systemPromptAddition: `## MODO PROATIVO ATIVO 🦞
+
+### Mentalidade
+Você não é um executor de tarefas — é um parceiro estratégico. Antes de responder, pergunte internamente: "O que genuinamente ajudaria meu usuário que ele talvez não tenha pensado em pedir?"
+
+### Reverse Prompting (OBRIGATÓRIO)
+Ao final de CADA resposta relevante, adicione um bloco como este:
+> 💡 **Próximo passo sugerido:** [uma ação específica e valiosa relacionada ao que foi discutido]
+
+Exemplos bons:
+- "💡 **Próximo passo sugerido:** Quer que eu agende um lembrete semanal para revisar esse relatório?"
+- "💡 **Próximo passo sugerido:** Posso criar um workflow automático para essa tarefa se quiser."
+- "💡 **Próximo passo sugerido:** Vi que você faz isso manualmente toda semana — posso automatizar."
+
+### Antecipação de Necessidades
+- Se o usuário resolve um problema X, pense: "Que problema Y normalmente aparece depois de X?"
+- Se algo pode ser automatizado, sugira antes de ser pedido.
+- Se uma tarefa foi feita 2x, proponha criar um workflow ou cron para ela.
+
+### Heartbeat (Auto-melhoria)
+Você tem um CronJob diário de auto-revisão. Use activate_heartbeat se o usuário pedir para ativar o "modo proativo", "heartbeat" ou "auto-melhoria".`,
+  },
+
+  // ── EMAIL (IMAP/SMTP) ──
+
+  email_check: {
+    id: 'email_check',
+    name: 'Ler E-mails (IMAP)',
+    description: 'Lê e-mails da caixa de entrada via IMAP. Suporta Gmail, Outlook, Zoho e qualquer servidor compatível.',
+    icon: 'Mail',
+    category: 'integration',
+    isDefault: false,
+    credentials: [
+      { key: 'email_imap_host', label: 'Servidor IMAP', placeholder: 'imap.gmail.com', required: true },
+      { key: 'email_imap_port', label: 'Porta IMAP', placeholder: '993', required: false },
+      { key: 'email_user', label: 'E-mail', placeholder: 'seu@email.com', required: true },
+      { key: 'email_pass', label: 'Senha / App Password', placeholder: 'xxxx xxxx xxxx xxxx', required: true },
+    ],
+    tool: {
+      type: 'function',
+      function: {
+        name: 'email_check',
+        description: 'Lê e-mails recentes da caixa de entrada via IMAP. Retorna remetente, assunto, data e corpo dos e-mails.',
+        parameters: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number', description: 'Número máximo de e-mails a retornar (padrão: 5)' },
+            only_unread: { type: 'boolean', description: 'Se true, retorna apenas não lidos (padrão: false)' },
+            search_from: { type: 'string', description: 'Filtrar por remetente (opcional)' },
+            search_subject: { type: 'string', description: 'Filtrar por assunto (opcional)' },
+          },
+          required: [],
+        },
+      },
+    },
+    systemPromptAddition: `Você pode ler e-mails da caixa de entrada do usuário usando email_check. Use quando o usuário:
+- Pedir para verificar e-mails
+- Quiser saber se recebeu algum e-mail de alguém específico
+- Precisar de informação contida em um e-mail
+Após ler, resuma os e-mails de forma clara e pergunte se o usuário quer responder algum.`,
+  },
+
+  // ── CLIMA (Google Weather API) ──
+
+  weather_check: {
+    id: 'weather_check',
+    name: 'Clima em Tempo Real',
+    description: 'Obtém condições meteorológicas atuais e previsão para qualquer cidade via Google Weather API.',
+    icon: 'Cloud',
+    category: 'integration',
+    isDefault: false,
+    credentials: [
+      { key: 'google_api_key', label: 'Google API Key', placeholder: 'AIza...', required: true },
+    ],
+    tool: {
+      type: 'function',
+      function: {
+        name: 'weather_check',
+        description: 'Obtém as condições climáticas atuais e previsão de uma cidade. Retorna temperatura, umidade, vento e condições gerais.',
+        parameters: {
+          type: 'object',
+          properties: {
+            location: { type: 'string', description: 'Cidade e país (ex: "São Paulo, BR" ou "New York, US")' },
+            units: { type: 'string', enum: ['metric', 'imperial'], description: 'Unidade de temperatura: metric (°C) ou imperial (°F). Padrão: metric' },
+          },
+          required: ['location'],
+        },
+      },
+    },
+    systemPromptAddition: `Você pode consultar o clima em tempo real usando weather_check. Use quando o usuário:
+- Perguntar sobre o tempo em uma cidade
+- Precisar de dados climáticos para tomar uma decisão
+- Mencionar planejamento de viagens ou eventos ao ar livre
+Apresente os dados de forma clara e sugira ações relevantes baseadas no clima.`,
+  },
+
+  // ── DEEP RESEARCH ──
+
+  deep_research: {
+    id: 'deep_research',
+    name: 'Deep Research Mode',
+    description: 'Ativa modo de pesquisa profunda: o agente formula um plano de pesquisa, usa múltiplas ferramentas e entrega um relatório estruturado com citações.',
+    icon: 'Microscope',
+    category: 'native',
+    isDefault: false,
+    credentials: [],
+    tool: {
+      type: 'function',
+      function: {
+        name: 'deep_research',
+        description: 'Ativa o modo de pesquisa profunda para um tópico complexo. O agente buscará múltiplas fontes e entregará análise estruturada.',
+        parameters: {
+          type: 'object',
+          properties: {
+            topic: { type: 'string', description: 'Tópico ou pergunta de pesquisa' },
+            research_type: {
+              type: 'string',
+              enum: ['competitive', 'market', 'technical', 'academic', 'due_diligence', 'general'],
+              description: 'Tipo de pesquisa para adaptar a metodologia',
+            },
+            depth: {
+              type: 'string',
+              enum: ['quick', 'standard', 'deep'],
+              description: 'quick = resumo em 3 pontos | standard = relatório completo | deep = análise exaustiva multi-fonte',
+            },
+          },
+          required: ['topic'],
+        },
+      },
+    },
+    systemPromptAddition: `Você tem acesso ao modo de DEEP RESEARCH. Quando o usuário pedir análise profunda, pesquisa de mercado, due diligence ou análise competitiva:
+1. Use deep_research para estruturar a pesquisa
+2. Complemente com web_search e scrape_url para fontes reais
+3. Entregue no formato: Sumário → Achados → Análise → Recomendações
+4. Cite TODAS as fontes de dados concretos`,
+  },
+
 };
 
 /** Skills padrão ativadas ao criar novo agente */
 export const DEFAULT_SKILLS = Object.values(SKILL_CATALOG)
   .filter(s => s.isDefault)
   .map(s => s.id);
+
