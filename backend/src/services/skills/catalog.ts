@@ -930,6 +930,430 @@ Apresente os dados de forma clara e sugira ações relevantes baseadas no clima.
 
   // ── DEEP RESEARCH ──
 
+  evolution_api_v2: {
+    id: 'evolution_api_v2',
+    name: 'Evolution API v2',
+    description: 'Opera instancias e mensagens do WhatsApp via Evolution API v2.3.',
+    icon: 'Zap',
+    category: 'integration',
+    isDefault: false,
+    credentials: [
+      { key: 'evolution_api_url', label: 'Evolution API URL', placeholder: 'https://seu-host-evolution', required: true },
+      { key: 'evolution_global_key', label: 'Evolution Global API Key', placeholder: 'global-key', required: true },
+      { key: 'evolution_instance', label: 'Evolution Instance', placeholder: 'meu-bot', required: false },
+      { key: 'evolution_api_key', label: 'Evolution Instance API Key', placeholder: 'instance-key', required: true },
+    ],
+    tool: {
+      type: 'function',
+      function: {
+        name: 'evolution_api_v2',
+        description: 'Usa a Evolution API v2.3 para criar instancia, conectar WhatsApp, enviar mensagens e configurar chatbot ou webhook.',
+        parameters: {
+          type: 'object',
+          properties: {
+            action: {
+              type: 'string',
+              enum: ['create_instance', 'connect_instance', 'get_connection_state', 'send_text', 'send_media', 'send_group_text', 'send_group_media', 'validate_numbers', 'create_group', 'list_groups', 'get_group_info', 'get_group_participants', 'get_group_invite_code', 'get_group_invite_info', 'send_group_invite', 'update_group_participants', 'update_group_setting', 'update_group_subject', 'update_group_description', 'leave_group', 'configure_webhook', 'configure_chatwoot', 'configure_typebot'],
+              description: 'Operacao da Evolution API v2.3.',
+            },
+            instance: {
+              type: 'string',
+              description: 'Nome da instancia. Se omitido, usa evolution_instance salvo no workspace.',
+            },
+            instance_name: {
+              type: 'string',
+              description: 'Nome da instancia ao criar uma nova. Use em create_instance quando quiser explicitar o nome.',
+            },
+            number: {
+              type: 'string',
+              description: 'Numero do WhatsApp no formato internacional sem "+" (ex: 5511999999999). Para send_text e send_media, prefira enviar aqui.',
+            },
+            text: {
+              type: 'string',
+              description: 'Texto da mensagem para send_text. Prefira enviar aqui em vez de aninhar no payload.',
+            },
+            delay: {
+              type: 'number',
+              description: 'Delay opcional em milissegundos para mensageria.',
+            },
+            media_url: {
+              type: 'string',
+              description: 'URL da midia para send_media.',
+            },
+            media_type: {
+              type: 'string',
+              description: 'Tipo da midia para send_media, como image, video, document ou audio.',
+            },
+            caption: {
+              type: 'string',
+              description: 'Legenda opcional da midia para send_media.',
+            },
+            group_jid: {
+              type: 'string',
+              description: 'JID do grupo no formato 999999999999999999@g.us. Para acoes de grupo, prefira enviar aqui.',
+            },
+            participants: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Lista de numeros para criar grupo, enviar convite ou atualizar participantes.',
+            },
+            subject: {
+              type: 'string',
+              description: 'Nome do grupo para create_group ou update_group_subject.',
+            },
+            description: {
+              type: 'string',
+              description: 'Descricao do grupo para convites ou update_group_description.',
+            },
+            invite_code: {
+              type: 'string',
+              description: 'Codigo de convite do grupo para get_group_invite_info.',
+            },
+            participant_action: {
+              type: 'string',
+              enum: ['add', 'remove', 'promote', 'demote'],
+              description: 'Acao sobre participantes do grupo.',
+            },
+            group_setting: {
+              type: 'string',
+              enum: ['announcement', 'not_announcement', 'locked', 'unlocked'],
+              description: 'Configuracao do grupo para update_group_setting.',
+            },
+            get_participants: {
+              type: 'boolean',
+              description: 'Quando true em list_groups, inclui participantes na resposta.',
+            },
+            payload: {
+              type: 'object',
+              description: 'JSON extra enviado para a rota escolhida. Use quando precisar de campos avancados.',
+              additionalProperties: true,
+            },
+            phone_number: {
+              type: 'string',
+              description: 'Numero opcional para pareamento ao conectar a instancia.',
+            },
+          },
+          required: ['action'],
+        },
+      },
+    },
+    systemPromptAddition: `Voce pode operar o WhatsApp via Evolution API v2.3 usando evolution_api_v2.
+Use esta skill para criar e conectar instancias, enviar texto ou midia, validar numeros, criar grupos, listar grupos, consultar participantes e configurar webhook, Chatwoot ou Typebot.
+Se a instancia padrao do workspace ja existir, para enviar mensagem use send_text diretamente e NAO tente create_instance sem o usuario pedir explicitamente.
+Para send_text, prefira chamar a tool com action, number e text nos campos diretos da funcao. Use payload apenas para parametros avancados.
+Para grupos, use group_jid no formato ...@g.us. Se o usuario pedir para mandar mensagem em grupo, prefira send_group_text ou send_group_media.
+Se create_instance responder que o nome da instancia ja existe, trate isso como instancia preexistente e reutilize-a em vez de pedir outro nome automaticamente.
+Se o usuario enviar um numero brasileiro sem DDI, normalize para 55 + DDD + numero antes de chamar a API.
+Use sempre numeros no formato internacional sem "+" (ex: 5511999999999). Antes de acoes que alteram estado, confirme com o usuario.`,
+  },
+
+  evogo_api: {
+    id: 'evogo_api',
+    name: 'evoGo API',
+    description: 'Opera instancias e mensageria do WhatsApp via Evolution API Go v3.',
+    icon: 'Zap',
+    category: 'integration',
+    isDefault: false,
+    credentials: [
+      { key: 'evogo_api_url', label: 'evoGo API URL', placeholder: 'https://seu-host-evogo', required: true },
+      { key: 'evogo_global_key', label: 'evoGo Global API Key', placeholder: 'global-key', required: true },
+      { key: 'evogo_instance', label: 'evoGo Instance', placeholder: 'meu-bot', required: false },
+      { key: 'evogo_api_key', label: 'evoGo Instance API Key', placeholder: 'instance-key', required: true },
+    ],
+    tool: {
+      type: 'function',
+      function: {
+        name: 'evogo_api',
+        description: 'Usa a Evolution API Go v3 para criar instancia, conectar WhatsApp, enviar mensagens, polls e operar grupos ou usuarios.',
+        parameters: {
+          type: 'object',
+          properties: {
+            action: {
+              type: 'string',
+              enum: ['create_instance', 'connect_instance', 'get_status', 'send_text', 'send_media', 'send_poll', 'create_group', 'list_groups', 'check_numbers', 'get_contacts', 'set_webhook', 'get_logs'],
+              description: 'Operacao da evoGo API.',
+            },
+            instance: {
+              type: 'string',
+              description: 'Nome da instancia. Necessario para operacoes administrativas como logs.',
+            },
+            payload: {
+              type: 'object',
+              description: 'JSON enviado para a rota escolhida. Ex: {number, text, delay} para send_text.',
+              additionalProperties: true,
+            },
+            phone_number: {
+              type: 'string',
+              description: 'Numero opcional para pairing code em connect_instance.',
+            },
+            query: {
+              type: 'object',
+              description: 'Parametros de query string para operacoes como get_logs.',
+              additionalProperties: true,
+            },
+          },
+          required: ['action'],
+        },
+      },
+    },
+    systemPromptAddition: `Voce pode operar o WhatsApp via evoGo (Evolution API Go v3) usando evogo_api.
+Use esta skill para criar e conectar instancias, consultar status, enviar texto/midia/enquetes, criar e listar grupos, verificar numeros e consultar contatos ou logs.
+Use sempre numeros no formato internacional sem "+" e participantes de grupo como JID quando a API pedir. Antes de acoes que alteram estado, confirme com o usuario.`,
+  },
+
+  meta_tags_optimizer: {
+    id: 'meta_tags_optimizer',
+    name: 'Meta Tags Optimizer',
+    description: 'Cria e otimiza title tags, meta descriptions, Open Graph e Twitter Cards para SEO e CTR.',
+    icon: 'FileText',
+    category: 'native',
+    isDefault: false,
+    credentials: [],
+    tool: {
+      type: 'function',
+      function: {
+        name: 'meta_tags_optimizer',
+        description: 'Analisa uma pagina ou briefing SEO e devolve sugestoes de meta tags prontas para usar.',
+        parameters: {
+          type: 'object',
+          properties: {
+            url: {
+              type: 'string',
+              description: 'URL opcional da pagina para tentar ler title e meta tags atuais.',
+            },
+            page_type: {
+              type: 'string',
+              enum: ['blog', 'product', 'landing', 'service', 'homepage', 'article', 'other'],
+              description: 'Tipo da pagina para orientar o estilo das tags.',
+            },
+            primary_keyword: {
+              type: 'string',
+              description: 'Palavra-chave principal da pagina.',
+            },
+            secondary_keywords: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Palavras-chave secundarias relevantes.',
+            },
+            target_audience: {
+              type: 'string',
+              description: 'Publico-alvo da pagina.',
+            },
+            primary_cta: {
+              type: 'string',
+              description: 'Acao principal que o usuario deve executar.',
+            },
+            unique_value_prop: {
+              type: 'string',
+              description: 'Diferencial ou promessa principal da pagina.',
+            },
+            current_title: {
+              type: 'string',
+              description: 'Title tag atual, se voce ja tiver.',
+            },
+            current_description: {
+              type: 'string',
+              description: 'Meta description atual, se voce ja tiver.',
+            },
+            brand_name: {
+              type: 'string',
+              description: 'Marca a ser incluida no title, quando fizer sentido.',
+            },
+            content_summary: {
+              type: 'string',
+              description: 'Resumo da pagina, oferta, produto ou conteudo.',
+            },
+            og_image_url: {
+              type: 'string',
+              description: 'URL da imagem Open Graph / social card.',
+            },
+            canonical_url: {
+              type: 'string',
+              description: 'Canonical preferencial. Se omitido, usa a propria url informada.',
+            },
+          },
+          required: ['primary_keyword'],
+        },
+      },
+    },
+    systemPromptAddition: `Voce pode usar meta_tags_optimizer para gerar title tags, meta descriptions, Open Graph e Twitter Cards melhores.
+Use essa skill quando o usuario pedir SEO on-page, otimizar CTR, melhorar snippets do Google ou criar meta tags para uma pagina.
+Se houver URL, informe-a para tentar analisar as tags atuais. Se nao houver, forneca um briefing claro com keyword principal, publico, CTA e diferencial.`,
+  },
+
+  meta_ads_read: {
+    id: 'meta_ads_read',
+    name: 'Meta Ads Read',
+    description: 'Consulta conta, campanhas, conjuntos, anuncios e insights da Meta Ads API com foco em leitura e analise.',
+    icon: 'CreditCard',
+    category: 'integration',
+    isDefault: false,
+    credentials: [
+      { key: 'meta_access_token', label: 'Meta Access Token', placeholder: 'EAAB...', required: true },
+      { key: 'meta_ad_account_id', label: 'Meta Ad Account ID', placeholder: '1234567890', required: true },
+    ],
+    tool: {
+      type: 'function',
+      function: {
+        name: 'meta_ads_read',
+        description: 'Consulta dados da Meta Ads API para listar campanhas, ad sets, ads e metricas de performance.',
+        parameters: {
+          type: 'object',
+          properties: {
+            action: {
+              type: 'string',
+              enum: ['get_account', 'list_campaigns', 'get_campaign', 'list_adsets', 'get_adset', 'list_ads', 'get_ad', 'get_insights'],
+              description: 'Operacao de leitura da Meta Ads API.',
+            },
+            campaign_id: {
+              type: 'string',
+              description: 'ID da campanha para detalhes, adsets ou insights.',
+            },
+            adset_id: {
+              type: 'string',
+              description: 'ID do conjunto de anuncios para detalhes, ads ou insights.',
+            },
+            ad_id: {
+              type: 'string',
+              description: 'ID do anuncio para detalhes ou insights.',
+            },
+            fields: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Campos extras a solicitar na Graph API.',
+            },
+            limit: {
+              type: 'number',
+              description: 'Quantidade maxima de itens na listagem.',
+            },
+            level: {
+              type: 'string',
+              enum: ['account', 'campaign', 'adset', 'ad'],
+              description: 'Nivel do insight para get_insights.',
+            },
+            date_preset: {
+              type: 'string',
+              description: 'Periodo pronto da Meta, como today, yesterday, last_7d, last_30d, this_month.',
+            },
+            since: {
+              type: 'string',
+              description: 'Data inicial no formato YYYY-MM-DD para get_insights.',
+            },
+            until: {
+              type: 'string',
+              description: 'Data final no formato YYYY-MM-DD para get_insights.',
+            },
+          },
+          required: ['action'],
+        },
+      },
+    },
+    systemPromptAddition: `Voce pode consultar Meta Ads com meta_ads_read.
+Use para ler conta, campanhas, conjuntos, anuncios e insights sem alterar nada.
+Prefira comecar por list_campaigns ou get_insights quando o usuario pedir diagnostico, performance ou auditoria de midia paga.`,
+  },
+
+  meta_ads_manage: {
+    id: 'meta_ads_manage',
+    name: 'Meta Ads Manage',
+    description: 'Cria e atualiza campanhas e conjuntos na Meta Ads API com confirmacao explicita antes de mutar estado.',
+    icon: 'CreditCard',
+    category: 'integration',
+    isDefault: false,
+    credentials: [
+      { key: 'meta_access_token', label: 'Meta Access Token', placeholder: 'EAAB...', required: true },
+      { key: 'meta_ad_account_id', label: 'Meta Ad Account ID', placeholder: '1234567890', required: true },
+    ],
+    tool: {
+      type: 'function',
+      function: {
+        name: 'meta_ads_manage',
+        description: 'Cria ou atualiza campanhas e ad sets da Meta Ads API. Exige confirm=true para executar.',
+        parameters: {
+          type: 'object',
+          properties: {
+            action: {
+              type: 'string',
+              enum: ['create_campaign', 'update_campaign', 'set_campaign_status', 'create_adset', 'update_adset', 'set_adset_status'],
+              description: 'Operacao de escrita da Meta Ads API.',
+            },
+            confirm: {
+              type: 'boolean',
+              description: 'Obrigatorio como true para executar qualquer alteracao real na conta.',
+            },
+            campaign_id: {
+              type: 'string',
+              description: 'ID da campanha para update ou alteracao de status.',
+            },
+            adset_id: {
+              type: 'string',
+              description: 'ID do ad set para update ou alteracao de status.',
+            },
+            name: {
+              type: 'string',
+              description: 'Nome da campanha ou ad set.',
+            },
+            objective: {
+              type: 'string',
+              description: 'Objetivo da campanha, como OUTCOME_TRAFFIC, OUTCOME_SALES, OUTCOME_LEADS.',
+            },
+            status: {
+              type: 'string',
+              enum: ['ACTIVE', 'PAUSED', 'ARCHIVED'],
+              description: 'Status desejado para campanha ou ad set.',
+            },
+            special_ad_categories: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Categorias especiais da campanha, se existirem.',
+            },
+            daily_budget: {
+              type: 'number',
+              description: 'Orcamento diario em centavos da moeda da conta.',
+            },
+            lifetime_budget: {
+              type: 'number',
+              description: 'Orcamento total em centavos da moeda da conta.',
+            },
+            billing_event: {
+              type: 'string',
+              description: 'Evento de cobranca do ad set, como IMPRESSIONS.',
+            },
+            optimization_goal: {
+              type: 'string',
+              description: 'Objetivo de otimizacao do ad set, como LINK_CLICKS, CONVERSIONS.',
+            },
+            bid_amount: {
+              type: 'number',
+              description: 'Lance em menor unidade da moeda, quando aplicavel.',
+            },
+            targeting: {
+              type: 'object',
+              description: 'Objeto de segmentacao do Meta Ads.',
+              additionalProperties: true,
+            },
+            start_time: {
+              type: 'string',
+              description: 'Horario de inicio ISO-8601 para ad set, quando aplicavel.',
+            },
+            end_time: {
+              type: 'string',
+              description: 'Horario de fim ISO-8601 para ad set, quando aplicavel.',
+            },
+          },
+          required: ['action', 'confirm'],
+        },
+      },
+    },
+    systemPromptAddition: `Voce pode gerenciar Meta Ads com meta_ads_manage, mas esta skill altera estado real.
+Antes de usar:
+1. confirme explicitamente com o usuario o que sera alterado
+2. inclua confirm=true apenas depois da confirmacao
+3. nunca invente IDs de campanha ou ad set
+4. para diagnostico e leitura, prefira meta_ads_read
+Nao use esta skill para deletar recursos. A primeira versao do Lumi suporta criacao, update e pausa de forma controlada.`,
+  },
+
   deep_research: {
     id: 'deep_research',
     name: 'Deep Research Mode',
@@ -975,4 +1399,3 @@ Apresente os dados de forma clara e sugira ações relevantes baseadas no clima.
 export const DEFAULT_SKILLS = Object.values(SKILL_CATALOG)
   .filter(s => s.isDefault)
   .map(s => s.id);
-

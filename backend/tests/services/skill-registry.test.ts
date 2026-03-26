@@ -7,11 +7,23 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock Prisma
 vi.mock('../../src/lib/prisma.js', () => ({
   prisma: {
+    agent: {
+      findFirst: vi.fn().mockResolvedValue(null),
+    },
     agentSkill: {
       findMany: vi.fn(),
       findFirst: vi.fn(),
       upsert: vi.fn().mockResolvedValue({}),
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
+    squadMember: {
+      findFirst: vi.fn().mockResolvedValue(null),
+    },
+    squad: {
+      findMany: vi.fn().mockResolvedValue([]),
+    },
+    workflow: {
+      findMany: vi.fn().mockResolvedValue([]),
     },
   },
 }));
@@ -207,5 +219,240 @@ describe('SkillRegistry', () => {
       })
     );
     expect(result).toContain('Status: 200 OK');
+  });
+
+  it('evolution_api_v2 aceita number e text como campos diretos em send_text', async () => {
+    (global as any).fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { get: () => 'application/json' },
+      json: async () => ({ sent: true }),
+    });
+
+    const result = await SkillRegistry.execute('evolution_api_v2', {
+      action: 'send_text',
+      number: '55 (22) 99610-2248',
+      text: 'TESTE TESTE 123',
+    }, {
+      tenantId: 'tenant-1',
+      agentId: 'agent-1',
+      credentials: {
+        evolution_api_url: 'https://evolution.example.com',
+        evolution_api_key: 'instance-key',
+        evolution_instance: 'brasilvibecoding',
+      },
+    });
+
+    expect((global as any).fetch).toHaveBeenCalledWith(
+      'https://evolution.example.com/message/sendText/brasilvibecoding',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          apikey: 'instance-key',
+          'Content-Type': 'application/json',
+        }),
+        body: JSON.stringify({
+          number: '5522996102248',
+          text: 'TESTE TESTE 123',
+        }),
+      })
+    );
+    expect(result).toContain('Status: 200 OK');
+  });
+
+  it('evolution_api_v2 prefixa 55 quando o numero brasileiro vem sem DDI', async () => {
+    (global as any).fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { get: () => 'application/json' },
+      json: async () => ({ sent: true }),
+    });
+
+    await SkillRegistry.execute('evolution_api_v2', {
+      action: 'send_text',
+      number: '22 99610-2248',
+      text: 'teste',
+    }, {
+      tenantId: 'tenant-1',
+      agentId: 'agent-1',
+      credentials: {
+        evolution_api_url: 'https://evolution.example.com',
+        evolution_api_key: 'instance-key',
+        evolution_instance: 'brasilvibecoding',
+      },
+    });
+
+    expect((global as any).fetch).toHaveBeenCalledWith(
+      'https://evolution.example.com/message/sendText/brasilvibecoding',
+      expect.objectContaining({
+        body: JSON.stringify({
+          number: '5522996102248',
+          text: 'teste',
+        }),
+      })
+    );
+  });
+
+  it('evolution_api_v2 envia mensagem para grupo usando group_jid', async () => {
+    (global as any).fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { get: () => 'application/json' },
+      json: async () => ({ sent: true }),
+    });
+
+    await SkillRegistry.execute('evolution_api_v2', {
+      action: 'send_group_text',
+      group_jid: '123456789-987654321',
+      text: 'mensagem para grupo',
+    }, {
+      tenantId: 'tenant-1',
+      agentId: 'agent-1',
+      credentials: {
+        evolution_api_url: 'https://evolution.example.com',
+        evolution_api_key: 'instance-key',
+        evolution_instance: 'brasilvibecoding',
+      },
+    });
+
+    expect((global as any).fetch).toHaveBeenCalledWith(
+      'https://evolution.example.com/message/sendText/brasilvibecoding',
+      expect.objectContaining({
+        body: JSON.stringify({
+          number: '123456789-987654321@g.us',
+          text: 'mensagem para grupo',
+        }),
+      })
+    );
+  });
+
+  it('evolution_api_v2 lista grupos com getParticipants opcional', async () => {
+    (global as any).fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { get: () => 'application/json' },
+      json: async () => ({ groups: [] }),
+    });
+
+    await SkillRegistry.execute('evolution_api_v2', {
+      action: 'list_groups',
+      get_participants: true,
+    }, {
+      tenantId: 'tenant-1',
+      agentId: 'agent-1',
+      credentials: {
+        evolution_api_url: 'https://evolution.example.com',
+        evolution_api_key: 'instance-key',
+        evolution_instance: 'brasilvibecoding',
+      },
+    });
+
+    expect((global as any).fetch).toHaveBeenCalledWith(
+      'https://evolution.example.com/group/fetchAllGroups/brasilvibecoding?getParticipants=true',
+      expect.objectContaining({
+        method: 'GET',
+      })
+    );
+  });
+
+  it('evolution_api_v2 consulta info de grupo usando group_jid', async () => {
+    (global as any).fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { get: () => 'application/json' },
+      json: async () => ({ groupJid: '123@g.us' }),
+    });
+
+    await SkillRegistry.execute('evolution_api_v2', {
+      action: 'get_group_info',
+      group_jid: '123@g.us',
+    }, {
+      tenantId: 'tenant-1',
+      agentId: 'agent-1',
+      credentials: {
+        evolution_api_url: 'https://evolution.example.com',
+        evolution_api_key: 'instance-key',
+        evolution_instance: 'brasilvibecoding',
+      },
+    });
+
+    expect((global as any).fetch).toHaveBeenCalledWith(
+      'https://evolution.example.com/group/findGroupInfos/brasilvibecoding?groupJid=123%40g.us',
+      expect.objectContaining({
+        method: 'GET',
+      })
+    );
+  });
+
+  it('meta_tags_optimizer gera bloco html com title e description', async () => {
+    const result = await SkillRegistry.execute('meta_tags_optimizer', {
+      primary_keyword: 'automacao de marketing',
+      target_audience: 'equipes comerciais',
+      primary_cta: 'Teste agora',
+      unique_value_prop: 'mais velocidade operacional e melhor conversao',
+      brand_name: 'Lumi Plus',
+    }, {
+      tenantId: 'tenant-1',
+      agentId: 'agent-1',
+      credentials: {},
+    });
+
+    expect(result).toContain('<title>');
+    expect(result).toContain('<meta name="description"');
+    expect(result).toContain('automacao de marketing');
+  });
+
+  it('meta_ads_manage exige confirm=true', async () => {
+    const result = await SkillRegistry.execute('meta_ads_manage', {
+      action: 'set_campaign_status',
+      campaign_id: '123',
+      status: 'PAUSED',
+      confirm: false,
+    }, {
+      tenantId: 'tenant-1',
+      agentId: 'agent-1',
+      credentials: {
+        meta_access_token: 'meta-token',
+        meta_ad_account_id: '12345',
+      },
+    });
+
+    expect(result).toContain('confirm=true');
+  });
+
+  it('meta_ads_read monta URL de campaigns com act_ prefix', async () => {
+    (global as any).fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { get: () => 'application/json' },
+      json: async () => ({ data: [] }),
+    });
+
+    await SkillRegistry.execute('meta_ads_read', {
+      action: 'list_campaigns',
+      limit: 5,
+    }, {
+      tenantId: 'tenant-1',
+      agentId: 'agent-1',
+      credentials: {
+        meta_access_token: 'meta-token',
+        meta_ad_account_id: '12345',
+      },
+    });
+
+    expect((global as any).fetch).toHaveBeenCalledWith(
+      expect.stringContaining('https://graph.facebook.com/v25.0/act_12345/campaigns'),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer meta-token',
+        }),
+      })
+    );
   });
 });

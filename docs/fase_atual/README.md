@@ -42,6 +42,7 @@ Este diretorio guarda o historico detalhado das fases do projeto.
 - [Fase 38: Autonomia Conversacional](./38_Autonomo_Squad_Workflow_Skills.md)
 - [Fase 39: Onboarding de APIs Customizadas](./39_Onboarding_APIs_Customizadas.md)
 - [Fase 40: Email Nativo & UI de Credenciais](./40_Email_Nativo_Templates_Agentes.md)
+- [Fase 41: Refinamentos Operacionais](./41_Refinamentos_Operacionais_25_03_2026.md)
 
 ## Status global
 
@@ -53,16 +54,29 @@ Este diretorio guarda o historico detalhado das fases do projeto.
 | 38 | Autonomia Conversacional | Concluido |
 | 39 | APIs Customizadas & Estabilidade | Concluido |
 | 40 | Email Nativo & UI de Credenciais | Concluido |
+| 41 | Refinamentos Operacionais | Em andamento |
 
-## Status atual - 24/03/2026
+## Status atual - 25/03/2026
 
-Fase 40 concluiu a integração nativa de comunicacões por E-mail (IMAP/SMTP) sem dependências externas e a estabilização do armazenamento de credenciais no frontend de Skills.
+Fase 40 foi concluida e entrou em refinamento operacional em 25/03/2026, consolidando email nativo, onboarding de APIs customizadas, workflows por agente e squads com contexto persistente por funcionario.
 
 ### Destaques
 
 - onboarding deterministico para mensagens com documentacao + endpoint + token
 - credenciais e settings alinhados em torno de `openrouter_key`
-- integrações de email (IMAP/SMTP) e credenciais de e-mail 100% integradas ao Vault do sistema
+- integracoes de email (IMAP/SMTP) e credenciais de e-mail 100% integradas ao Vault do sistema
 - templates de agentes especialistas em SEO e Marketing adicionados nativamente
-- bug crítico de HTTP Method (POST vs PUT) na interface de salvar credenciais resolvido
-- backend validado com `npm run build` e `npm test`
+- workflows agora sao exibidos por agente selecionado, evitando a sensacao de lista global
+- squads criadas a partir de um agente assumem esse agente como lider padrao no canvas
+- funcionarios da squad agora aceitam `mandato especifico` em texto e upload de `.md/.txt`
+- mandatos anexados no canvas entram na execucao do worker de workflow e na delegacao interna da squad
+- etapas de `human_approval` voltam para a mesma conversa que iniciou a execucao
+- respostas naturais como `sim` e `nao: ajuste ...` agora controlam aprovacao e retrabalho
+- o chat web sincroniza a conversa ativa da squad para exibir pedidos de aprovacao sem refresh manual
+- skills nativas `evolution_api_v2` e `evogo_api` passam a existir no marketplace com configuracao via `/settings`
+- o modal de ativacao das skills tambem salva credenciais no workspace e reaproveita configuracoes ja existentes
+- `evolution_api_v2` passa a cobrir melhor operacoes de grupo, incluindo envio para grupo, participantes e configuracoes
+- skills `meta_tags_optimizer`, `meta_ads_read` e `meta_ads_manage` passam a existir no marketplace com configuracao via `/settings`
+- `meta_ads_manage` entra com guarda de confirmacao explicita e escopo reduzido para evitar alteracoes sensiveis sem controle
+- troubleshooting operacional passa a explicitar que `500` no Next com UI vazia pode ser backend local offline em `localhost:3001`, e nao perda de dados
+- backend e dashboard validados com `npm run build`

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Eye, EyeOff, KeyRound, Save, Search, Server, Shield, MessageSquare, AtSign, Globe, Loader2, CheckCircle2, ChevronDown, Cpu, BookOpen } from 'lucide-react';
+import { Eye, EyeOff, KeyRound, Save, Search, Server, Shield, MessageSquare, AtSign, Globe, Loader2, CheckCircle2, ChevronDown, Cpu, BookOpen, CreditCard } from 'lucide-react';
 import Link from 'next/link';
 import api from '@/lib/api';
 
@@ -510,6 +510,131 @@ export default function SettingsPage() {
             <p className="text-[10px] text-foreground/50 pt-3">
               Fluxo recomendado: subir a imagem via <strong className="text-foreground/70">upload_image</strong> e depois chamar <strong className="text-foreground/70">instagram_publish</strong>.
             </p>
+          </div>
+        </div>
+
+        <div className="industrial-card">
+          <div className="flex items-center gap-2 mb-1 pb-4 border-b border-border-strong">
+            <CreditCard className="w-4 h-4 text-primary" />
+            <h2 className="font-black text-xs uppercase tracking-widest">Meta Ads</h2>
+          </div>
+
+          <div className="py-4 space-y-1">
+            {renderKeyField(
+              'meta_access_token',
+              'Meta Access Token',
+              'EAAB...',
+              'Token da Meta Graph / Marketing API com escopo ads_read e, se necessario, ads_management.',
+              <KeyRound className="w-3.5 h-3.5" />
+            )}
+
+            <div className="border-t border-border-strong" />
+
+            {renderKeyField(
+              'meta_ad_account_id',
+              'Meta Ad Account ID',
+              '1234567890',
+              'ID da conta de anuncios. Pode ser salvo sem o prefixo act_; a skill normaliza automaticamente.',
+              <CreditCard className="w-3.5 h-3.5" />
+            )}
+
+            <p className="text-[10px] text-foreground/50 pt-3">
+              Use <strong className="text-foreground/70">meta_ads_read</strong> para leitura e diagnostico. Reserve <strong className="text-foreground/70">meta_ads_manage</strong> para acoes mutaveis com confirmacao explicita.
+            </p>
+          </div>
+        </div>
+
+        <div className="industrial-card">
+          <div className="flex items-center gap-2 mb-1 pb-4 border-b border-border-strong">
+            <MessageSquare className="w-4 h-4 text-primary" />
+            <h2 className="font-black text-xs uppercase tracking-widest">Evolution API v2</h2>
+          </div>
+
+          <div className="py-4 space-y-1">
+            {renderKeyField(
+              'evolution_api_url',
+              'Evolution API URL',
+              'https://seu-host-evolution',
+              'Base URL do servidor Evolution API v2.3 confiavel que sera usado pelo agente.',
+              <Server className="w-3.5 h-3.5" />
+            )}
+
+            <div className="border-t border-border-strong" />
+
+            {renderKeyField(
+              'evolution_global_key',
+              'Evolution Global Key',
+              'global-key',
+              'Chave administrativa para criar ou gerenciar instancias na Evolution API v2.',
+              <Shield className="w-3.5 h-3.5" />
+            )}
+
+            <div className="border-t border-border-strong" />
+
+            {renderKeyField(
+              'evolution_api_key',
+              'Evolution Instance Key',
+              'instance-key',
+              'Chave da instancia usada para mensageria, grupos e operacoes do WhatsApp.',
+              <KeyRound className="w-3.5 h-3.5" />
+            )}
+
+            <div className="border-t border-border-strong" />
+
+            {renderKeyField(
+              'evolution_instance',
+              'Evolution Instance',
+              'meu-bot',
+              'Nome padrao da instancia que a skill usara quando o usuario nao informar outra.',
+              <AtSign className="w-3.5 h-3.5" />
+            )}
+          </div>
+        </div>
+
+        <div className="industrial-card">
+          <div className="flex items-center gap-2 mb-1 pb-4 border-b border-border-strong">
+            <MessageSquare className="w-4 h-4 text-primary" />
+            <h2 className="font-black text-xs uppercase tracking-widest">evoGo API</h2>
+          </div>
+
+          <div className="py-4 space-y-1">
+            {renderKeyField(
+              'evogo_api_url',
+              'evoGo API URL',
+              'https://seu-host-evogo',
+              'Base URL do servidor evoGo / Evolution API Go v3 usado pelo agente.',
+              <Server className="w-3.5 h-3.5" />
+            )}
+
+            <div className="border-t border-border-strong" />
+
+            {renderKeyField(
+              'evogo_global_key',
+              'evoGo Global Key',
+              'global-key',
+              'Chave administrativa da evoGo para criar instancia, listar instancias e consultar logs.',
+              <Shield className="w-3.5 h-3.5" />
+            )}
+
+            <div className="border-t border-border-strong" />
+
+            {renderKeyField(
+              'evogo_api_key',
+              'evoGo Instance Key',
+              'instance-key',
+              'Token da instancia usado para mensageria, contatos e grupos na evoGo.',
+              <KeyRound className="w-3.5 h-3.5" />
+            )}
+
+            <div className="border-t border-border-strong" />
+
+            {renderKeyField(
+              'evogo_instance',
+              'evoGo Instance',
+              'meu-bot',
+              'Nome padrao da instancia usado nas acoes administrativas da evoGo.',
+              <AtSign className="w-3.5 h-3.5" />
+            )}
           </div>
         </div>
       </div>

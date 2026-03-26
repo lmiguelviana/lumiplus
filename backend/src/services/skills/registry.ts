@@ -7,11 +7,30 @@ import { prisma } from '../../lib/prisma.js';
 import { SKILL_CATALOG, DEFAULT_SKILLS } from './catalog.js';
 import { KnowledgeService } from '../knowledge.service.js';
 import { logger } from '../../lib/logger.js';
+import { containsTextFilter, fromDbJson, toDbJson } from '../../lib/db-compat.js';
 
 interface SkillContext {
   tenantId: string;
   agentId: string;
   credentials: Record<string, string>;
+  runtime?: {
+    channel?: string;
+    externalId?: string;
+    conversationId?: string;
+    contactId?: string;
+    sourceAgentId?: string;
+  };
+}
+
+interface AsyncSkillExecution {
+  __asyncExecution: true;
+  content: string;
+  metadata: {
+    type: 'squad_triggered' | 'workflow_triggered';
+    runId: string;
+    squadId?: string | null;
+    workflowId?: string | null;
+  };
 }
 
 interface CustomApiConfig {
@@ -26,11 +45,130 @@ interface CustomApiConfig {
   type?: string;
 }
 
+function parseWorkflowJson<T>(value: unknown, fallback: T): T {
+  return fromDbJson(value, fallback);
+}
+
+function parseSkillConfig<T extends Record<string, any> = Record<string, any>>(value: unknown): T {
+  return fromDbJson<T>(value, {} as T);
+}
+
+function extractWorkflowAgentId(trigger: unknown): string | null {
+  const parsedTrigger = parseWorkflowJson<Record<string, any>>(trigger, {});
+  const agentId = parsedTrigger?.agentId ?? parsedTrigger?.config?.agentId;
+  return typeof agentId === 'string' && agentId.trim() ? agentId.trim() : null;
+}
+
+function workflowMatchesAgent(
+  workflow: { name?: string | null; description?: string | null; trigger?: unknown },
+  agentId: string,
+  agentName?: string | null
+) {
+  const workflowAgentId = extractWorkflowAgentId(workflow.trigger);
+  if (workflowAgentId) return workflowAgentId === agentId;
+  if (!agentName) return false;
+
+  const text = `${workflow.name || ''} ${workflow.description || ''}`.toLowerCase();
+  return text.includes(agentName.toLowerCase());
+}
+
 export class SkillRegistry {
+  private static async hasLedSquad(tenantId: string, agentId: string): Promise<boolean> {
+    const squadMembership = await prisma.squadMember.findFirst({
+      where: {
+        agentId,
+        role: 'leader',
+        squad: { tenantId },
+      },
+      select: { id: true },
+    });
+
+    return !!squadMembership;
+  }
+
+  private static async getAgentWorkflowNames(tenantId: string, agentId: string): Promise<string[]> {
+    const [agent, workflows] = await Promise.all([
+      prisma.agent.findFirst({
+        where: { id: agentId, tenantId },
+        select: { name: true },
+      }),
+      prisma.workflow.findMany({
+        where: {
+          tenantId,
+          status: 'active',
+        },
+        select: {
+          name: true,
+          description: true,
+          trigger: true,
+          updatedAt: true,
+        },
+        orderBy: { updatedAt: 'desc' },
+        take: 50,
+      }),
+    ]);
+
+    const names = workflows
+      .filter((workflow) => workflowMatchesAgent(workflow, agentId, agent?.name))
+      .map((workflow) => workflow.name?.trim())
+      .filter((name): name is string => Boolean(name));
+
+    return [...new Set(names)];
+  }
+
+  private static async hasAgentWorkflow(tenantId: string, agentId: string): Promise<boolean> {
+    const names = await this.getAgentWorkflowNames(tenantId, agentId);
+    return names.length > 0;
+  }
+
+  private static async getEffectiveSkillIds(tenantId: string, agentId: string): Promise<string[]> {
+    const activeSkills = await this.getActiveSkillIds(tenantId, agentId);
+    const effectiveSkills = [...activeSkills];
+
+    if (!effectiveSkills.includes('run_squad') && await this.hasLedSquad(tenantId, agentId)) {
+      effectiveSkills.push('run_squad');
+    }
+
+    if (!effectiveSkills.includes('run_workflow') && await this.hasAgentWorkflow(tenantId, agentId)) {
+      effectiveSkills.push('run_workflow');
+    }
+
+    return effectiveSkills;
+  }
+
+  private static async getSquadPromptAddition(tenantId: string, agentId: string): Promise<string> {
+    const ledSquads = await prisma.squad.findMany({
+      where: {
+        tenantId,
+        members: {
+          some: {
+            agentId,
+            role: 'leader',
+          },
+        },
+      },
+      select: { name: true },
+      take: 5,
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    if (ledSquads.length === 0) return '';
+
+    const squadNames = ledSquads.map((squad) => `"${squad.name}"`).join(', ');
+    return `Voce tem acesso direto as squads que lidera neste workspace. Squads disponiveis agora: ${squadNames}. Se o usuario perguntar se voce consegue acessar sua squad, sua equipe ou seus especialistas, responda que sim e cite os nomes disponiveis. Quando o usuario pedir para usar sua equipe, sua squad ou os especialistas, use run_squad em vez de responder que nao tem acesso.`;
+  }
+
+  private static async getWorkflowPromptAddition(tenantId: string, agentId: string): Promise<string> {
+    const workflowNames = await this.getAgentWorkflowNames(tenantId, agentId);
+    if (workflowNames.length === 0) return '';
+
+    const visibleNames = workflowNames.slice(0, 5).map((name) => `"${name}"`).join(', ');
+    return `Voce tem acesso direto aos workflows deste agente no canvas visual. Workflows disponiveis agora: ${visibleNames}. Se o usuario perguntar se voce consegue acessar, abrir, usar ou disparar seus workflows, responda que sim e cite os nomes disponiveis. Quando o usuario pedir para executar um workflow seu, use run_workflow em vez de responder que nao tem acesso.`;
+  }
 
   /** Retorna tools ativas de um agente (para passar ao AIService) */
   static async getActiveTools(tenantId: string, agentId: string) {
-    const activeSkills = await this.getActiveSkillIds(tenantId, agentId);
+    const activeSkills = await this.getEffectiveSkillIds(tenantId, agentId);
     const catalogTools = activeSkills
       .map(id => SKILL_CATALOG[id]?.tool)
       .filter(Boolean);
@@ -40,13 +178,15 @@ export class SkillRegistry {
 
   /** Retorna adições ao system prompt de skills ativas */
   static async getSystemPromptAdditions(tenantId: string, agentId: string) {
-    const activeSkills = await this.getActiveSkillIds(tenantId, agentId);
+    const activeSkills = await this.getEffectiveSkillIds(tenantId, agentId);
     const catalogAdditions = activeSkills
       .map(id => SKILL_CATALOG[id]?.systemPromptAddition)
       .filter(Boolean)
     ;
     const customAdditions = await this.getCustomSkillPromptAdditions(tenantId, agentId);
-    return [...catalogAdditions, ...customAdditions].join('\n\n');
+    const squadAddition = await this.getSquadPromptAddition(tenantId, agentId);
+    const workflowAddition = await this.getWorkflowPromptAddition(tenantId, agentId);
+    return [...catalogAdditions, ...customAdditions, squadAddition, workflowAddition].filter(Boolean).join('\n\n');
   }
 
   /** IDs das skills ativas */
@@ -71,7 +211,7 @@ export class SkillRegistry {
         for (const skillId of missing) {
           await prisma.agentSkill.upsert({
             where: { agentId_skillId: { agentId, skillId } },
-            create: { tenantId, agentId, skillId, enabled: true, config: {} },
+            create: { tenantId, agentId, skillId, enabled: true, config: toDbJson({}) },
             update: { enabled: true },
           }).catch(() => {});
         }
@@ -88,7 +228,7 @@ export class SkillRegistry {
     for (const skillId of DEFAULT_SKILLS) {
       await prisma.agentSkill.upsert({
         where: { agentId_skillId: { agentId, skillId } },
-        create: { tenantId, agentId, skillId, enabled: true, config: {} },
+        create: { tenantId, agentId, skillId, enabled: true, config: toDbJson({}) },
         update: { enabled: true },
       }).catch(() => {});
     }
@@ -96,11 +236,30 @@ export class SkillRegistry {
 
   /** Ativa uma skill para um agente */
   static async activate(tenantId: string, agentId: string, skillId: string, config: any = {}) {
+    if (skillId.startsWith('custom:')) {
+      const existing = await prisma.agentSkill.findFirst({
+        where: { tenantId, agentId, skillId },
+      });
+
+      if (!existing && Object.keys(config || {}).length === 0) {
+        throw new Error(`Integracao customizada "${skillId}" nao encontrada para este agente`);
+      }
+
+      return prisma.agentSkill.upsert({
+        where: { agentId_skillId: { agentId, skillId } },
+        create: { tenantId, agentId, skillId, enabled: true, config: toDbJson(config) },
+        update: {
+          enabled: true,
+          config: Object.keys(config || {}).length > 0 ? toDbJson(config) : existing?.config || toDbJson({}),
+        },
+      });
+    }
+
     if (!SKILL_CATALOG[skillId]) throw new Error(`Skill "${skillId}" não existe no catálogo`);
     return prisma.agentSkill.upsert({
       where: { agentId_skillId: { agentId, skillId } },
-      create: { tenantId, agentId, skillId, enabled: true, config },
-      update: { enabled: true, config },
+      create: { tenantId, agentId, skillId, enabled: true, config: toDbJson(config) },
+      update: { enabled: true, config: toDbJson(config) },
     });
   }
 
@@ -113,7 +272,7 @@ export class SkillRegistry {
   }
 
   /** Executa handler de uma skill */
-  static async execute(skillId: string, args: any, context: SkillContext): Promise<string> {
+  static async execute(skillId: string, args: any, context: SkillContext): Promise<string | AsyncSkillExecution> {
     if (skillId.startsWith('custom_api_')) {
       return this.executeCustomApiTool(skillId, args, context);
     }
@@ -154,7 +313,7 @@ export class SkillRegistry {
       });
 
       return customSkills.map((skill) => {
-        const config = (skill.config || {}) as Record<string, any>;
+        const config = parseSkillConfig(skill.config);
         const apiName = String(config.apiName || skill.skillId.replace(/^custom:/, '').replace(/[_-]/g, ' '));
         const credentialKey = String(config.credentialKey || skill.skillId.replace(/^custom:/, '').replace(/-/g, '_'));
         const authHeader = String(config.authHeader || 'Authorization');
@@ -183,11 +342,11 @@ export class SkillRegistry {
 
       return customSkills
         .filter((skill) => {
-          const config = (skill.config || {}) as CustomApiConfig;
+          const config = parseSkillConfig<CustomApiConfig>(skill.config);
           return (config.type || 'custom_api') === 'custom_api';
         })
         .map((skill) => {
-          const config = (skill.config || {}) as CustomApiConfig;
+          const config = parseSkillConfig<CustomApiConfig>(skill.config);
           const apiName = String(config.apiName || skill.skillId.replace(/^custom:/, '').replace(/[_-]/g, ' '));
           const toolName = this.toCustomToolName(skill.skillId);
           const defaultPath = config.defaultPath || '/';
@@ -239,7 +398,11 @@ export class SkillRegistry {
     }
   }
 
-  private static async executeCustomApiTool(skillId: string, args: any, context: SkillContext): Promise<string> {
+  private static async executeCustomApiTool(
+    skillId: string,
+    args: any,
+    context: SkillContext
+  ): Promise<string | AsyncSkillExecution> {
     const customSkillId = this.fromCustomToolName(skillId);
     const customSkill = await prisma.agentSkill.findFirst({
       where: {
@@ -254,7 +417,7 @@ export class SkillRegistry {
       return `Integracao customizada "${skillId}" nao encontrada para este agente.`;
     }
 
-    const config = (customSkill.config || {}) as CustomApiConfig;
+    const config = parseSkillConfig<CustomApiConfig>(customSkill.config);
     const credentialKey = String(config.credentialKey || customSkillId.replace(/^custom:/, '').replace(/-/g, '_'));
     const authHeader = String(config.authHeader || 'Authorization');
     const authScheme = config.authScheme ? `${String(config.authScheme)} ` : '';
@@ -342,7 +505,311 @@ async function resolveCredentialPlaceholders(value: unknown, tenantId: string): 
 
 // ── Handlers de Skills ──
 
-const SKILL_HANDLERS: Record<string, (args: any, ctx: SkillContext) => Promise<string>> = {
+function buildServiceUrl(baseUrl: string, path: string, query?: Record<string, unknown>) {
+  const normalizedBase = String(baseUrl || '').replace(/\/+$/, '');
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  const url = new URL(`${normalizedBase}${normalizedPath}`);
+
+  if (query && typeof query === 'object') {
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined || value === null || value === '') continue;
+      url.searchParams.set(key, String(value));
+    }
+  }
+
+  return url.toString();
+}
+
+function stringifyServiceResponse(data: unknown) {
+  if (typeof data === 'string') return data.slice(0, 4000);
+  return JSON.stringify(data, null, 2).slice(0, 4000);
+}
+
+async function runHttpIntegration(options: {
+  baseUrl: string;
+  path: string;
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  apiKey: string;
+  body?: unknown;
+  query?: Record<string, unknown>;
+}) {
+  const url = buildServiceUrl(options.baseUrl, options.path, options.query);
+  const method = options.method || 'GET';
+  const headers: Record<string, string> = {
+    apikey: options.apiKey,
+  };
+
+  const fetchOptions: RequestInit = {
+    method,
+    headers,
+    signal: AbortSignal.timeout(20000),
+  };
+
+  if (options.body !== undefined && options.body !== null && method !== 'GET') {
+    headers['Content-Type'] = 'application/json';
+    fetchOptions.body = JSON.stringify(options.body);
+  }
+
+  const response = await fetch(url, fetchOptions);
+  const contentType = response.headers.get('content-type') || '';
+  const data = contentType.includes('json')
+    ? await response.json().catch(() => null)
+    : await response.text().catch(() => '');
+
+  if (!response.ok) {
+    const details = stringifyServiceResponse(data || response.statusText || 'erro desconhecido');
+    throw new Error(`${response.status} ${response.statusText}: ${details}`);
+  }
+
+  return `Status: ${response.status} ${response.statusText}\n\nResposta:\n${stringifyServiceResponse(data)}`;
+}
+
+function normalizeWhatsappNumber(value: unknown) {
+  const digits = String(value || '').replace(/\D+/g, '').trim();
+  if (!digits) return '';
+
+  // Heuristica local: quando o usuario informa um numero brasileiro sem DDI,
+  // prefixamos 55 para reduzir falhas operacionais no WhatsApp.
+  if ((digits.length === 10 || digits.length === 11) && !digits.startsWith('55')) {
+    return `55${digits}`;
+  }
+
+  return digits;
+}
+
+function normalizeGroupJid(value: unknown) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (raw.endsWith('@g.us')) return raw;
+
+  const compact = raw.replace(/\s+/g, '');
+  if (/^[0-9-]+$/.test(compact)) {
+    return `${compact}@g.us`;
+  }
+
+  return raw;
+}
+
+function pickFirstString(...values: unknown[]) {
+  for (const value of values) {
+    const normalized = String(value || '').trim();
+    if (normalized) return normalized;
+  }
+  return '';
+}
+
+function pickFirstNumber(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim() && !Number.isNaN(Number(value))) return Number(value);
+  }
+  return undefined;
+}
+
+function normalizeText(value: unknown) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function truncateAtWordBoundary(value: string, maxLength: number) {
+  const normalized = normalizeText(value);
+  if (normalized.length <= maxLength) return normalized;
+
+  const sliced = normalized.slice(0, maxLength + 1);
+  const boundary = sliced.lastIndexOf(' ');
+  return (boundary > 24 ? sliced.slice(0, boundary) : normalized.slice(0, maxLength)).trim();
+}
+
+function extractHtmlTag(html: string, pattern: RegExp) {
+  const match = html.match(pattern);
+  return normalizeText(match?.[1] || '');
+}
+
+function extractHtmlTagFallback(html: string, ...patterns: RegExp[]) {
+  for (const pattern of patterns) {
+    const value = extractHtmlTag(html, pattern);
+    if (value) return value;
+  }
+
+  return '';
+}
+
+function extractPageMeta(html: string) {
+  return {
+    title: extractHtmlTag(html, /<title[^>]*>([\s\S]*?)<\/title>/i),
+    description: extractHtmlTagFallback(
+      html,
+      /<meta[^>]*(?:name|property)=["']description["'][^>]*content=["']([^"']+)["'][^>]*>/i,
+      /<meta[^>]*content=["']([^"']+)["'][^>]*(?:name|property)=["']description["'][^>]*>/i
+    ),
+    ogTitle: extractHtmlTag(
+      html,
+      /<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']+)["'][^>]*>/i
+    ),
+    ogDescription: extractHtmlTag(
+      html,
+      /<meta[^>]*property=["']og:description["'][^>]*content=["']([^"']+)["'][^>]*>/i
+    ),
+    ogImage: extractHtmlTag(
+      html,
+      /<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["'][^>]*>/i
+    ),
+    twitterCard: extractHtmlTag(
+      html,
+      /<meta[^>]*name=["']twitter:card["'][^>]*content=["']([^"']+)["'][^>]*>/i
+    ),
+    twitterTitle: extractHtmlTag(
+      html,
+      /<meta[^>]*name=["']twitter:title["'][^>]*content=["']([^"']+)["'][^>]*>/i
+    ),
+    twitterDescription: extractHtmlTag(
+      html,
+      /<meta[^>]*name=["']twitter:description["'][^>]*content=["']([^"']+)["'][^>]*>/i
+    ),
+  };
+}
+
+async function fetchPageMeta(url: string) {
+  const response = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LumiPlusBot/1.0)' },
+    signal: AbortSignal.timeout(10000),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Falha ao acessar URL informada (${response.status} ${response.statusText})`);
+  }
+
+  const html = await response.text();
+  return extractPageMeta(html);
+}
+
+function buildTitleOptions(params: {
+  primaryKeyword: string;
+  valueProp: string;
+  brandName: string;
+  pageType: string;
+}) {
+  const year = new Date().getFullYear();
+  const keyword = truncateAtWordBoundary(params.primaryKeyword, 28);
+  const value = truncateAtWordBoundary(params.valueProp || 'Resultado real e aplicavel', 34);
+  const brandSuffix = params.brandName ? ` | ${truncateAtWordBoundary(params.brandName, 16)}` : '';
+  const typeHint = params.pageType === 'product' ? 'Comprar' : params.pageType === 'service' ? 'Servico' : 'Guia';
+
+  return [
+    truncateAtWordBoundary(`${keyword}: ${value}${brandSuffix}`, 60),
+    truncateAtWordBoundary(`${typeHint} de ${keyword}${brandSuffix}`, 60),
+    truncateAtWordBoundary(`${keyword} em ${year}: ${value}`, 60),
+  ].filter(Boolean);
+}
+
+function buildDescriptionOptions(params: {
+  primaryKeyword: string;
+  targetAudience: string;
+  primaryCta: string;
+  valueProp: string;
+  secondaryKeywords: string[];
+}) {
+  const keyword = truncateAtWordBoundary(params.primaryKeyword, 28);
+  const audience = truncateAtWordBoundary(params.targetAudience || 'quem busca essa solucao', 36);
+  const cta = truncateAtWordBoundary(params.primaryCta || 'Saiba mais agora', 32);
+  const value = truncateAtWordBoundary(params.valueProp || 'beneficios claros e aplicaveis', 52);
+  const secondary = params.secondaryKeywords.length > 0
+    ? ` Inclui ${truncateAtWordBoundary(params.secondaryKeywords.slice(0, 2).join(' e '), 42)}.`
+    : '';
+
+  return [
+    truncateAtWordBoundary(`${keyword} para ${audience}. ${value}. ${cta}.${secondary}`, 160),
+    truncateAtWordBoundary(`Descubra ${keyword} com foco em ${value}. Ideal para ${audience}. ${cta}.`, 160),
+    truncateAtWordBoundary(`${keyword}: veja como aplicar, comparar e decidir melhor. ${value}. ${cta}.`, 160),
+  ].filter(Boolean);
+}
+
+function buildMetaTagsBlock(params: {
+  title: string;
+  description: string;
+  url: string;
+  canonicalUrl: string;
+  ogImageUrl: string;
+  pageType: string;
+}) {
+  const url = params.url || params.canonicalUrl || '';
+  const canonical = params.canonicalUrl || params.url || '';
+  const ogType = params.pageType === 'article' || params.pageType === 'blog' ? 'article' : 'website';
+  const twitterCard = params.ogImageUrl ? 'summary_large_image' : 'summary';
+
+  const lines = [
+    `<title>${params.title}</title>`,
+    `<meta name="description" content="${params.description}">`,
+    canonical ? `<link rel="canonical" href="${canonical}">` : '',
+    `<meta property="og:type" content="${ogType}">`,
+    url ? `<meta property="og:url" content="${url}">` : '',
+    `<meta property="og:title" content="${params.title}">`,
+    `<meta property="og:description" content="${params.description}">`,
+    params.ogImageUrl ? `<meta property="og:image" content="${params.ogImageUrl}">` : '',
+    `<meta name="twitter:card" content="${twitterCard}">`,
+    `<meta name="twitter:title" content="${params.title}">`,
+    `<meta name="twitter:description" content="${params.description}">`,
+    params.ogImageUrl ? `<meta name="twitter:image" content="${params.ogImageUrl}">` : '',
+  ].filter(Boolean);
+
+  return lines.join('\n');
+}
+
+function normalizeMetaAdAccountId(value: unknown) {
+  const accountId = String(value || '').replace(/^act_/, '').trim();
+  return accountId ? `act_${accountId}` : '';
+}
+
+function buildMetaGraphUrl(path: string, query?: Record<string, unknown>) {
+  const baseUrl = 'https://graph.facebook.com/v25.0';
+  return buildServiceUrl(baseUrl, path, query);
+}
+
+async function runMetaGraphRequest(options: {
+  path: string;
+  accessToken: string;
+  method?: 'GET' | 'POST' | 'DELETE';
+  query?: Record<string, unknown>;
+  body?: Record<string, unknown>;
+}) {
+  const url = buildMetaGraphUrl(options.path, options.query);
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${options.accessToken}`,
+  };
+  const method = options.method || 'GET';
+  const init: RequestInit = {
+    method,
+    headers,
+    signal: AbortSignal.timeout(20000),
+  };
+
+  if (options.body && method !== 'GET') {
+    const formData = new URLSearchParams();
+    for (const [key, value] of Object.entries(options.body)) {
+      if (value === undefined || value === null || value === '') continue;
+      if (typeof value === 'object') {
+        formData.set(key, JSON.stringify(value));
+      } else {
+        formData.set(key, String(value));
+      }
+    }
+
+    headers['Content-Type'] = 'application/x-www-form-urlencoded';
+    init.body = formData.toString();
+  }
+
+  const response = await fetch(url, init);
+  const data = await response.json().catch(() => null);
+  if (!response.ok || data?.error) {
+    const message = data?.error?.message || response.statusText || 'erro desconhecido';
+    throw new Error(message);
+  }
+
+  return data;
+}
+
+const SKILL_HANDLERS: Record<string, (args: any, ctx: SkillContext) => Promise<string | AsyncSkillExecution>> = {
 
   upload_image: async (args, ctx) => {
     const apiKey = ctx.credentials.imgbb_api_key;
@@ -497,6 +964,432 @@ const SKILL_HANDLERS: Record<string, (args: any, ctx: SkillContext) => Promise<s
   },
 
   // ── Send Buttons: retorna texto com marcação de botões ──
+  meta_tags_optimizer: async (args) => {
+    const primaryKeyword = normalizeText(args.primary_keyword);
+    if (!primaryKeyword) {
+      return 'primary_keyword e obrigatorio para gerar tags otimizadas.';
+    }
+
+    const url = normalizeText(args.url);
+    const pageType = normalizeText(args.page_type || 'other') || 'other';
+    const secondaryKeywords = Array.isArray(args.secondary_keywords)
+      ? args.secondary_keywords.map((keyword: unknown) => normalizeText(keyword)).filter(Boolean)
+      : normalizeText(args.secondary_keywords)
+        .split(',')
+        .map((keyword) => normalizeText(keyword))
+        .filter(Boolean);
+
+    let currentMeta = {
+      title: normalizeText(args.current_title),
+      description: normalizeText(args.current_description),
+      ogTitle: '',
+      ogDescription: '',
+      ogImage: '',
+      twitterCard: '',
+      twitterTitle: '',
+      twitterDescription: '',
+    };
+
+    if (url) {
+      try {
+        currentMeta = await fetchPageMeta(url);
+      } catch (error: any) {
+        logger.warn('meta_tags_optimizer', `Nao foi possivel ler a URL ${url}: ${error.message}`);
+      }
+    }
+
+    if (!currentMeta.title) currentMeta.title = normalizeText(args.current_title);
+    if (!currentMeta.description) currentMeta.description = normalizeText(args.current_description);
+
+    const targetAudience = normalizeText(args.target_audience || 'quem busca essa solucao');
+    const primaryCta = normalizeText(args.primary_cta || 'Saiba mais agora');
+    const valueProp = normalizeText(args.unique_value_prop || args.content_summary || 'beneficios claros e aplicaveis');
+    const brandName = normalizeText(args.brand_name);
+    const ogImageUrl = normalizeText(args.og_image_url || currentMeta.ogImage);
+    const canonicalUrl = normalizeText(args.canonical_url || url);
+
+    const titleOptions = buildTitleOptions({
+      primaryKeyword,
+      valueProp,
+      brandName,
+      pageType,
+    });
+    const descriptionOptions = buildDescriptionOptions({
+      primaryKeyword,
+      targetAudience,
+      primaryCta,
+      valueProp,
+      secondaryKeywords,
+    });
+
+    const recommendedTitle = titleOptions[0] || primaryKeyword;
+    const recommendedDescription = descriptionOptions[0] || valueProp;
+    const metaBlock = buildMetaTagsBlock({
+      title: recommendedTitle,
+      description: recommendedDescription,
+      url,
+      canonicalUrl,
+      ogImageUrl,
+      pageType,
+    });
+
+    const currentTags = [
+      currentMeta.title ? `- Title atual: ${currentMeta.title}` : '',
+      currentMeta.description ? `- Description atual: ${currentMeta.description}` : '',
+      currentMeta.ogTitle ? `- OG Title atual: ${currentMeta.ogTitle}` : '',
+      currentMeta.ogDescription ? `- OG Description atual: ${currentMeta.ogDescription}` : '',
+      currentMeta.twitterTitle ? `- Twitter Title atual: ${currentMeta.twitterTitle}` : '',
+      currentMeta.twitterDescription ? `- Twitter Description atual: ${currentMeta.twitterDescription}` : '',
+    ].filter(Boolean);
+
+    const titleLines = titleOptions.map((title, index) => `${index + 1}. ${title} (${title.length} chars)`);
+    const descriptionLines = descriptionOptions.map((description, index) => `${index + 1}. ${description} (${description.length} chars)`);
+
+    return [
+      `Otimizacao SEO concluida para a keyword principal "${primaryKeyword}".`,
+      url ? `URL analisada: ${url}` : 'URL nao informada; geracao feita com base no briefing manual.',
+      '',
+      'Tags atuais encontradas:',
+      currentTags.length > 0 ? currentTags.join('\n') : '- Nenhuma tag atual informada ou encontrada.',
+      '',
+      'Sugestoes de title:',
+      titleLines.join('\n'),
+      '',
+      'Sugestoes de meta description:',
+      descriptionLines.join('\n'),
+      '',
+      `Recomendacao final: title="${recommendedTitle}" | description="${recommendedDescription}"`,
+      '',
+      'Bloco HTML sugerido:',
+      '```html',
+      metaBlock,
+      '```',
+    ].join('\n');
+  },
+
+  meta_ads_read: async (args, ctx) => {
+    const accessToken = normalizeText(ctx.credentials.meta_access_token);
+    const accountId = normalizeMetaAdAccountId(
+      pickFirstString(args.account_id, ctx.credentials.meta_ad_account_id)
+    );
+
+    if (!accessToken) {
+      return 'Meta Access Token nao configurado. Salve meta_access_token em /settings.';
+    }
+
+    const action = normalizeText(args.action);
+    if (!action) {
+      return 'action e obrigatorio para consultar Meta Ads.';
+    }
+
+    try {
+      const limit = pickFirstNumber(args.limit);
+      const fields = Array.isArray(args.fields)
+        ? args.fields.map((field: unknown) => normalizeText(field)).filter(Boolean).join(',')
+        : normalizeText(args.fields);
+
+      if (action === 'get_account') {
+        if (!accountId) return 'meta_ad_account_id nao configurado.';
+
+        const data = await runMetaGraphRequest({
+          path: accountId,
+          accessToken,
+          query: {
+            fields: fields || 'name,account_status,currency,timezone_name,amount_spent,balance',
+          },
+        });
+
+        return stringifyServiceResponse(data);
+      }
+
+      if (action === 'list_campaigns') {
+        if (!accountId) return 'meta_ad_account_id nao configurado.';
+
+        const data = await runMetaGraphRequest({
+          path: `${accountId}/campaigns`,
+          accessToken,
+          query: {
+            fields: fields || 'id,name,status,objective,effective_status,daily_budget,lifetime_budget',
+            limit: limit || 25,
+          },
+        });
+
+        return stringifyServiceResponse(data);
+      }
+
+      if (action === 'get_campaign') {
+        const campaignId = normalizeText(args.campaign_id);
+        if (!campaignId) return 'campaign_id e obrigatorio para get_campaign.';
+
+        const data = await runMetaGraphRequest({
+          path: campaignId,
+          accessToken,
+          query: {
+            fields: fields || 'id,name,status,objective,effective_status,daily_budget,lifetime_budget',
+          },
+        });
+
+        return stringifyServiceResponse(data);
+      }
+
+      if (action === 'list_adsets') {
+        const campaignId = normalizeText(args.campaign_id);
+        if (!campaignId && !accountId) return 'meta_ad_account_id ou campaign_id e obrigatorio para list_adsets.';
+
+        const data = await runMetaGraphRequest({
+          path: campaignId ? `${campaignId}/adsets` : `${accountId}/adsets`,
+          accessToken,
+          query: {
+            fields: fields || 'id,name,status,effective_status,daily_budget,lifetime_budget,optimization_goal,billing_event',
+            limit: limit || 25,
+          },
+        });
+
+        return stringifyServiceResponse(data);
+      }
+
+      if (action === 'get_adset') {
+        const adsetId = normalizeText(args.adset_id);
+        if (!adsetId) return 'adset_id e obrigatorio para get_adset.';
+
+        const data = await runMetaGraphRequest({
+          path: adsetId,
+          accessToken,
+          query: {
+            fields: fields || 'id,name,status,effective_status,daily_budget,lifetime_budget,optimization_goal,billing_event,targeting',
+          },
+        });
+
+        return stringifyServiceResponse(data);
+      }
+
+      if (action === 'list_ads') {
+        const adsetId = normalizeText(args.adset_id);
+        if (!adsetId && !accountId) return 'meta_ad_account_id ou adset_id e obrigatorio para list_ads.';
+
+        const data = await runMetaGraphRequest({
+          path: adsetId ? `${adsetId}/ads` : `${accountId}/ads`,
+          accessToken,
+          query: {
+            fields: fields || 'id,name,status,effective_status,creative{id,name}',
+            limit: limit || 25,
+          },
+        });
+
+        return stringifyServiceResponse(data);
+      }
+
+      if (action === 'get_ad') {
+        const adId = normalizeText(args.ad_id);
+        if (!adId) return 'ad_id e obrigatorio para get_ad.';
+
+        const data = await runMetaGraphRequest({
+          path: adId,
+          accessToken,
+          query: {
+            fields: fields || 'id,name,status,effective_status,creative{id,name,object_story_spec}',
+          },
+        });
+
+        return stringifyServiceResponse(data);
+      }
+
+      if (action === 'get_insights') {
+        const level = normalizeText(args.level || 'account') || 'account';
+        const campaignId = normalizeText(args.campaign_id);
+        const adsetId = normalizeText(args.adset_id);
+        const adId = normalizeText(args.ad_id);
+        const path = level === 'campaign'
+          ? campaignId
+          : level === 'adset'
+            ? adsetId
+            : level === 'ad'
+              ? adId
+              : accountId;
+
+        if (!path) {
+          return 'Informe meta_ad_account_id ou o ID especifico do nivel solicitado para consultar insights.';
+        }
+
+        const query: Record<string, unknown> = {
+          fields: fields || 'campaign_name,adset_name,ad_name,spend,impressions,reach,clicks,ctr,cpc,cpm,frequency',
+          limit: limit || 50,
+        };
+
+        const datePreset = normalizeText(args.date_preset);
+        const since = normalizeText(args.since);
+        const until = normalizeText(args.until);
+        if (since && until) {
+          query.time_range = JSON.stringify({ since, until });
+        } else if (datePreset) {
+          query.date_preset = datePreset;
+        }
+
+        const data = await runMetaGraphRequest({
+          path: `${path}/insights`,
+          accessToken,
+          query,
+        });
+
+        return stringifyServiceResponse(data);
+      }
+
+      return `Acao "${action}" nao suportada em meta_ads_read.`;
+    } catch (error: any) {
+      logger.error('meta_ads_read', 'Falha ao consultar Meta Ads', error.message);
+      return `Erro ao consultar Meta Ads: ${error.message}`;
+    }
+  },
+
+  meta_ads_manage: async (args, ctx) => {
+    const accessToken = normalizeText(ctx.credentials.meta_access_token);
+    const accountId = normalizeMetaAdAccountId(
+      pickFirstString(args.account_id, ctx.credentials.meta_ad_account_id)
+    );
+
+    if (!accessToken) {
+      return 'Meta Access Token nao configurado. Salve meta_access_token em /settings.';
+    }
+
+    if (args.confirm !== true) {
+      return 'Essa acao altera a conta de anuncios real. Confirme explicitamente com o usuario e chame novamente com confirm=true.';
+    }
+
+    const action = normalizeText(args.action);
+    if (!action) {
+      return 'action e obrigatorio para gerenciar Meta Ads.';
+    }
+
+    try {
+      if (action === 'create_campaign') {
+        if (!accountId) return 'meta_ad_account_id nao configurado.';
+
+        const name = normalizeText(args.name);
+        const objective = normalizeText(args.objective);
+        if (!name || !objective) return 'name e objective sao obrigatorios para create_campaign.';
+
+        const data = await runMetaGraphRequest({
+          path: `${accountId}/campaigns`,
+          accessToken,
+          method: 'POST',
+          body: {
+            name,
+            objective,
+            status: normalizeText(args.status || 'PAUSED') || 'PAUSED',
+            special_ad_categories: Array.isArray(args.special_ad_categories) ? args.special_ad_categories : [],
+          },
+        });
+
+        return stringifyServiceResponse(data);
+      }
+
+      if (action === 'update_campaign' || action === 'set_campaign_status') {
+        const campaignId = normalizeText(args.campaign_id);
+        if (!campaignId) return 'campaign_id e obrigatorio.';
+
+        const payload: Record<string, unknown> = {};
+        if (action === 'set_campaign_status') {
+          const status = normalizeText(args.status);
+          if (!status) return 'status e obrigatorio para set_campaign_status.';
+          payload.status = status;
+        } else {
+          if (args.name !== undefined) payload.name = normalizeText(args.name);
+          if (args.objective !== undefined) payload.objective = normalizeText(args.objective);
+          if (args.status !== undefined) payload.status = normalizeText(args.status);
+          if (args.special_ad_categories !== undefined) {
+            payload.special_ad_categories = Array.isArray(args.special_ad_categories)
+              ? args.special_ad_categories
+              : [];
+          }
+        }
+
+        const data = await runMetaGraphRequest({
+          path: campaignId,
+          accessToken,
+          method: 'POST',
+          body: payload,
+        });
+
+        return stringifyServiceResponse(data);
+      }
+
+      if (action === 'create_adset') {
+        if (!accountId) return 'meta_ad_account_id nao configurado.';
+
+        const name = normalizeText(args.name);
+        const campaignId = normalizeText(args.campaign_id);
+        const billingEvent = normalizeText(args.billing_event);
+        const optimizationGoal = normalizeText(args.optimization_goal);
+        const targeting = args.targeting;
+
+        if (!name || !campaignId || !billingEvent || !optimizationGoal || !targeting) {
+          return 'name, campaign_id, billing_event, optimization_goal e targeting sao obrigatorios para create_adset.';
+        }
+
+        const body: Record<string, unknown> = {
+          name,
+          campaign_id: campaignId,
+          billing_event: billingEvent,
+          optimization_goal: optimizationGoal,
+          targeting,
+          status: normalizeText(args.status || 'PAUSED') || 'PAUSED',
+        };
+
+        if (args.daily_budget !== undefined) body.daily_budget = String(args.daily_budget);
+        if (args.lifetime_budget !== undefined) body.lifetime_budget = String(args.lifetime_budget);
+        if (args.bid_amount !== undefined) body.bid_amount = String(args.bid_amount);
+        if (args.start_time !== undefined) body.start_time = normalizeText(args.start_time);
+        if (args.end_time !== undefined) body.end_time = normalizeText(args.end_time);
+
+        const data = await runMetaGraphRequest({
+          path: `${accountId}/adsets`,
+          accessToken,
+          method: 'POST',
+          body,
+        });
+
+        return stringifyServiceResponse(data);
+      }
+
+      if (action === 'update_adset' || action === 'set_adset_status') {
+        const adsetId = normalizeText(args.adset_id);
+        if (!adsetId) return 'adset_id e obrigatorio.';
+
+        const payload: Record<string, unknown> = {};
+        if (action === 'set_adset_status') {
+          const status = normalizeText(args.status);
+          if (!status) return 'status e obrigatorio para set_adset_status.';
+          payload.status = status;
+        } else {
+          if (args.name !== undefined) payload.name = normalizeText(args.name);
+          if (args.status !== undefined) payload.status = normalizeText(args.status);
+          if (args.daily_budget !== undefined) payload.daily_budget = String(args.daily_budget);
+          if (args.lifetime_budget !== undefined) payload.lifetime_budget = String(args.lifetime_budget);
+          if (args.billing_event !== undefined) payload.billing_event = normalizeText(args.billing_event);
+          if (args.optimization_goal !== undefined) payload.optimization_goal = normalizeText(args.optimization_goal);
+          if (args.bid_amount !== undefined) payload.bid_amount = String(args.bid_amount);
+          if (args.targeting !== undefined) payload.targeting = args.targeting;
+          if (args.start_time !== undefined) payload.start_time = normalizeText(args.start_time);
+          if (args.end_time !== undefined) payload.end_time = normalizeText(args.end_time);
+        }
+
+        const data = await runMetaGraphRequest({
+          path: adsetId,
+          accessToken,
+          method: 'POST',
+          body: payload,
+        });
+
+        return stringifyServiceResponse(data);
+      }
+
+      return `Acao "${action}" nao suportada em meta_ads_manage.`;
+    } catch (error: any) {
+      logger.error('meta_ads_manage', 'Falha ao alterar Meta Ads', error.message);
+      return `Erro ao alterar Meta Ads: ${error.message}`;
+    }
+  },
+
   send_buttons: async (args) => {
     const { message, options } = args;
     if (!options?.length) return message || '';
@@ -605,11 +1498,11 @@ const SKILL_HANDLERS: Record<string, (args: any, ctx: SkillContext) => Promise<s
           agentId: ctx.agentId,
           skillId: `custom:${credential_key}`,
           enabled: true,
-          config: { credentialKey: credential_key, apiName, installedBy: 'self_configure' },
+          config: toDbJson({ credentialKey: credential_key, apiName, installedBy: 'self_configure' }),
         },
         update: {
           enabled: true,
-          config: { credentialKey: credential_key, apiName, installedBy: 'self_configure' },
+          config: toDbJson({ credentialKey: credential_key, apiName, installedBy: 'self_configure' }),
         },
       });
 
@@ -1112,11 +2005,11 @@ const SKILL_HANDLERS: Record<string, (args: any, ctx: SkillContext) => Promise<s
         agentId: ctx.agentId,
         skillId: `custom:clawhub_${slug}`,
         enabled: true,
-        config: { credentialKey: `clawhub_${slug}`, apiName: `ClawhHub: ${apiName}`, installedBy: 'clawhub_import', sourceUrl: url },
+        config: toDbJson({ credentialKey: `clawhub_${slug}`, apiName: `ClawhHub: ${apiName}`, installedBy: 'clawhub_import', sourceUrl: url }),
       },
       update: {
         enabled: true,
-        config: { credentialKey: `clawhub_${slug}`, apiName: `ClawhHub: ${apiName}`, installedBy: 'clawhub_import', sourceUrl: url },
+        config: toDbJson({ credentialKey: `clawhub_${slug}`, apiName: `ClawhHub: ${apiName}`, installedBy: 'clawhub_import', sourceUrl: url }),
       },
     });
 
@@ -1228,20 +2121,61 @@ Seja direto e prático. Este é seu momento de evoluir.`;
 
     try {
       const { AgentSquadService } = await import('../agent-squad.service.js');
+      const { SquadExecutionService } = await import('../squad-execution.service.js');
       const squad = await AgentSquadService.getAgentSquad(ctx.tenantId, ctx.agentId);
 
       if (!squad) {
         return 'Você ainda não tem uma squad configurada. Crie um agente e adicione-o à sua squad com `/squad add <nome>` ou pelo painel web em Agentes.';
       }
 
+      const canvasState = fromDbJson<Record<string, any> | null>((squad as any).canvasState, (squad as any).canvasState ?? null);
+      const unlinkedCanvasEmployees = Array.isArray(canvasState?.nodes)
+        ? (canvasState.nodes as any[])
+            .filter((node) =>
+              node?.type === 'agent'
+              && node?.parentId
+              && node?.data?.role !== 'leader'
+              && !node?.data?.agentId
+            )
+            .map((node) => String(node?.data?.label || 'Funcionario sem nome').trim())
+        : [];
+      const hasCanvasEmployees = Array.isArray(canvasState?.nodes)
+        && (canvasState.nodes as any[]).some((node) =>
+          node?.type === 'agent'
+          && node?.parentId
+          && node?.data?.role !== 'leader'
+        );
+
       const members = squad.members.filter((m: any) => m.role !== 'leader');
-      if (members.length === 0) {
+      if (members.length === 0 && unlinkedCanvasEmployees.length === 0 && !hasCanvasEmployees) {
+        if (unlinkedCanvasEmployees.length > 0) {
+          const visibleEmployees = unlinkedCanvasEmployees.slice(0, 5).map((label) => `"${label}"`).join(', ');
+          return `Sua squad ainda nao tem funcionarios vinculados a agentes reais. No canvas, estes funcionarios ainda estao sem agente base: ${visibleEmployees}. Abra o Neural Architect e selecione um agente existente em cada funcionario para a squad poder executar tarefas no chat.`;
+        }
         return 'Sua squad ainda não tem membros além de você mesmo. Adicione especialistas com `/squad add <nome>` ou pelo painel web.';
       }
 
       // Notifica o usuário enquanto executa (o handler retorna o resultado final)
-      const result = await AgentSquadService.execute(ctx.tenantId, ctx.agentId, task.trim());
-      return result;
+      const execution = await SquadExecutionService.trigger({
+        tenantId: ctx.tenantId,
+        squadId: squad.id,
+        objective: task.trim(),
+        channel: ctx.runtime?.channel || 'web',
+        externalId: ctx.runtime?.externalId || null,
+        conversationId: ctx.runtime?.conversationId || null,
+        sourceAgentId: ctx.runtime?.sourceAgentId || ctx.agentId,
+        persistObjectiveMessage: false,
+        persistStartMessage: false,
+      });
+      return {
+        __asyncExecution: true,
+        content: `Squad "${execution.squad.name}" iniciada com sucesso.\nRun ID: \`${execution.run.id.slice(0, 8)}...\`\n\nVou trazer o resultado por esta mesma conversa assim que a execucao terminar.`,
+        metadata: {
+          type: 'squad_triggered',
+          runId: execution.run.id,
+          squadId: execution.squad.id,
+        },
+      };
     } catch (err: any) {
       console.error('[Skill:run_squad] Erro:', err.message);
       return `Erro ao acionar a squad: ${err.message}`;
@@ -1255,26 +2189,78 @@ Seja direto e prático. Este é seu momento de evoluir.`;
     }
 
     try {
-      const workflow = await prisma.workflow.findFirst({
-        where: {
-          tenantId: ctx.tenantId,
-          name: { contains: workflow_name.trim(), mode: 'insensitive' },
-          status: 'active',
-        },
-      });
+      const [agent, candidateWorkflows, allAgentWorkflows] = await Promise.all([
+        prisma.agent.findFirst({
+          where: { id: ctx.agentId, tenantId: ctx.tenantId },
+          select: { name: true },
+        }),
+        prisma.workflow.findMany({
+          where: {
+            tenantId: ctx.tenantId,
+            name: containsTextFilter(workflow_name.trim()),
+            status: 'active',
+          },
+          orderBy: { updatedAt: 'desc' },
+          take: 10,
+        }),
+        prisma.workflow.findMany({
+          where: {
+            tenantId: ctx.tenantId,
+            status: 'active',
+          },
+          select: {
+            name: true,
+            description: true,
+            trigger: true,
+            updatedAt: true,
+          },
+          orderBy: { updatedAt: 'desc' },
+          take: 20,
+        }),
+      ]);
+
+      const workflow = candidateWorkflows.find((item) =>
+        workflowMatchesAgent(item, ctx.agentId, agent?.name)
+      );
 
       if (!workflow) {
-        return `Workflow "${workflow_name}" não encontrado ou inativo. Verifique o nome no canvas de Workflows e certifique-se que está com status ativo.`;
+        const availableNames = allAgentWorkflows
+          .filter((item) => workflowMatchesAgent(item, ctx.agentId, agent?.name))
+          .map((item) => item.name?.trim())
+          .filter((name): name is string => Boolean(name));
+
+        const suggestion = availableNames.length > 0
+          ? ` Workflows disponiveis para este agente: ${[...new Set(availableNames)].slice(0, 5).map((name) => `"${name}"`).join(', ')}.`
+          : '';
+
+        return `Workflow "${workflow_name}" nao encontrado para este agente ou esta inativo.${suggestion}`;
       }
 
       const { WorkflowRunnerService } = await import('../workflow-runner.service.js');
       const run = await WorkflowRunnerService.triggerWorkflow(
         ctx.tenantId,
         workflow.id,
-        { triggeredBy: 'agent_skill', agentId: ctx.agentId, input: input || '' }
+        {
+          triggeredBy: 'agent_skill',
+          agentId: ctx.agentId,
+          input: input || '',
+          channel: ctx.runtime?.channel,
+          externalId: ctx.runtime?.externalId,
+          conversationId: ctx.runtime?.conversationId,
+          contactId: ctx.runtime?.contactId,
+          sourceAgentId: ctx.runtime?.sourceAgentId || ctx.agentId,
+        }
       );
+      return {
+        __asyncExecution: true,
+        content: `Workflow "${workflow.name}" disparado com sucesso.\nID da execucao: \`${run.id.slice(0, 8)}...\`\n\nVou trazer o andamento por esta mesma conversa quando houver atualizacao.`,
+        metadata: {
+          type: 'workflow_triggered',
+          runId: run.id,
+          workflowId: workflow.id,
+        },
+      };
 
-      return `✅ Workflow **"${workflow.name}"** disparado com sucesso!\nID da execução: \`${run.id.slice(0, 8)}...\`\n\nAcompanhe o progresso no painel de Workflows.`;
     } catch (err: any) {
       console.error('[Skill:run_workflow] Erro:', err.message);
       return `Erro ao disparar o workflow: ${err.message}`;
@@ -1383,6 +2369,485 @@ Seja direto e prático. Este é seu momento de evoluir.`;
   },
 
   // ── CLIMA: Google Weather API (com fallback Open-Meteo) ──
+  evolution_api_v2: async (args, ctx) => {
+    const action = String(args.action || '').trim();
+    const baseUrl = String(ctx.credentials.evolution_api_url || '').trim();
+    const globalKey = String(ctx.credentials.evolution_global_key || '').trim();
+    const instanceKey = String(ctx.credentials.evolution_api_key || '').trim();
+    const defaultInstance = String(ctx.credentials.evolution_instance || '').trim();
+    const instance = String(args.instance || defaultInstance || '').trim();
+    const payload = (args.payload && typeof args.payload === 'object') ? { ...(args.payload as Record<string, unknown>) } : {};
+    const phoneNumber = normalizeWhatsappNumber(args.phone_number || args.number || (payload as any).number);
+    const groupJid = normalizeGroupJid(args.group_jid || (payload as any).groupJid || (payload as any).remoteJid);
+    const normalizedPayload: Record<string, unknown> = { ...payload };
+    const directNumber = normalizeWhatsappNumber((payload as any).number || args.number || args.to || args.phone_number);
+    const directText = pickFirstString((payload as any).text, args.text, args.message, args.content);
+    const directDelay = pickFirstNumber((payload as any).delay, args.delay);
+    const directMediaUrl = pickFirstString((payload as any).media, (payload as any).url, args.media_url, args.url);
+    const directMediaType = pickFirstString((payload as any).mediatype, (payload as any).mediaType, args.media_type);
+    const directCaption = pickFirstString((payload as any).caption, args.caption);
+    const directInstanceName = pickFirstString((payload as any).instanceName, args.instance_name, args.instance, defaultInstance);
+    const directParticipants = Array.isArray(args.participants)
+      ? args.participants.map((value: unknown) => normalizeWhatsappNumber(value)).filter(Boolean)
+      : Array.isArray((payload as any).participants)
+        ? (payload as any).participants.map((value: unknown) => normalizeWhatsappNumber(value)).filter(Boolean)
+        : undefined;
+    const directSubject = pickFirstString((payload as any).subject, args.subject);
+    const directDescription = pickFirstString((payload as any).description, args.description);
+    const directInviteCode = pickFirstString(args.invite_code, (payload as any).inviteCode);
+    const directParticipantAction = pickFirstString(args.participant_action, (payload as any).action);
+    const directGroupSetting = pickFirstString(args.group_setting, (payload as any).action);
+    const directGetParticipants = typeof args.get_participants === 'boolean'
+      ? args.get_participants
+      : typeof (payload as any).getParticipants === 'boolean'
+        ? (payload as any).getParticipants
+        : undefined;
+
+    if (directNumber && normalizedPayload.number == null) normalizedPayload.number = directNumber;
+    if (directText && normalizedPayload.text == null) normalizedPayload.text = directText;
+    if (directDelay !== undefined && normalizedPayload.delay == null) normalizedPayload.delay = directDelay;
+    if (directMediaUrl && normalizedPayload.media == null && normalizedPayload.url == null) normalizedPayload.media = directMediaUrl;
+    if (directMediaType && normalizedPayload.mediatype == null) normalizedPayload.mediatype = directMediaType;
+    if (directCaption && normalizedPayload.caption == null) normalizedPayload.caption = directCaption;
+    if (groupJid && normalizedPayload.groupJid == null) normalizedPayload.groupJid = groupJid;
+    if (groupJid && normalizedPayload.remoteJid == null) normalizedPayload.remoteJid = groupJid;
+    if (directParticipants && normalizedPayload.participants == null) normalizedPayload.participants = directParticipants;
+    if (directSubject && normalizedPayload.subject == null) normalizedPayload.subject = directSubject;
+    if (directDescription && normalizedPayload.description == null) normalizedPayload.description = directDescription;
+
+    if (!baseUrl) return 'Evolution API URL nao configurada.';
+
+    const actionMap: Record<string, { method: 'GET' | 'POST' | 'DELETE'; path: string; apiKey: string; body?: unknown; query?: Record<string, unknown> }> = {
+      create_instance: {
+        method: 'POST',
+        path: '/instance/create',
+        apiKey: globalKey,
+        body: {
+          instanceName: directInstanceName,
+          qrcode: (normalizedPayload as any).qrcode ?? true,
+          integration: String((normalizedPayload as any).integration || 'WHATSAPP-BAILEYS'),
+          ...(normalizedPayload as object),
+        },
+      },
+      connect_instance: {
+        method: 'GET',
+        path: `/instance/connect/${instance}`,
+        apiKey: instanceKey,
+        query: phoneNumber ? { number: phoneNumber } : undefined,
+      },
+      get_connection_state: {
+        method: 'GET',
+        path: `/instance/connectionState/${instance}`,
+        apiKey: instanceKey,
+      },
+      send_text: {
+        method: 'POST',
+        path: `/message/sendText/${instance}`,
+        apiKey: instanceKey,
+        body: normalizedPayload,
+      },
+      send_media: {
+        method: 'POST',
+        path: `/message/sendMedia/${instance}`,
+        apiKey: instanceKey,
+        body: normalizedPayload,
+      },
+      send_group_text: {
+        method: 'POST',
+        path: `/message/sendText/${instance}`,
+        apiKey: instanceKey,
+        body: {
+          number: groupJid,
+          text: directText,
+          ...(directDelay !== undefined ? { delay: directDelay } : {}),
+          ...(payload as object),
+        },
+      },
+      send_group_media: {
+        method: 'POST',
+        path: `/message/sendMedia/${instance}`,
+        apiKey: instanceKey,
+        body: {
+          number: groupJid,
+          ...(directMediaUrl ? { media: directMediaUrl } : {}),
+          ...(directMediaType ? { mediatype: directMediaType } : {}),
+          ...(directCaption ? { caption: directCaption } : {}),
+          ...(directDelay !== undefined ? { delay: directDelay } : {}),
+          ...(payload as object),
+        },
+      },
+      validate_numbers: {
+        method: 'POST',
+        path: `/chat/whatsappNumbers/${instance}`,
+        apiKey: instanceKey,
+        body: normalizedPayload,
+      },
+      create_group: {
+        method: 'POST',
+        path: `/group/create/${instance}`,
+        apiKey: instanceKey,
+        body: {
+          ...(directSubject ? { subject: directSubject } : {}),
+          ...(directParticipants ? { participants: directParticipants } : {}),
+          ...(payload as object),
+        },
+      },
+      list_groups: {
+        method: 'GET',
+        path: `/group/fetchAllGroups/${instance}`,
+        apiKey: instanceKey,
+        query: directGetParticipants !== undefined ? { getParticipants: directGetParticipants } : undefined,
+      },
+      get_group_info: {
+        method: 'GET',
+        path: `/group/findGroupInfos/${instance}`,
+        apiKey: instanceKey,
+        query: groupJid ? { groupJid } : undefined,
+      },
+      get_group_participants: {
+        method: 'GET',
+        path: `/group/participants/${instance}`,
+        apiKey: instanceKey,
+        query: groupJid ? { groupJid } : undefined,
+      },
+      get_group_invite_code: {
+        method: 'GET',
+        path: `/group/inviteCode/${instance}`,
+        apiKey: instanceKey,
+        query: groupJid ? { groupJid } : undefined,
+      },
+      get_group_invite_info: {
+        method: 'GET',
+        path: `/group/inviteInfo/${instance}`,
+        apiKey: instanceKey,
+        query: directInviteCode ? { inviteCode: directInviteCode } : undefined,
+      },
+      send_group_invite: {
+        method: 'POST',
+        path: `/group/sendInvite/${instance}`,
+        apiKey: instanceKey,
+        body: {
+          ...(groupJid ? { groupJid } : {}),
+          ...(directDescription ? { description: directDescription } : {}),
+          ...(directParticipants ? { numbers: directParticipants } : {}),
+          ...(payload as object),
+        },
+      },
+      update_group_participants: {
+        method: 'POST',
+        path: `/group/updateParticipant/${instance}`,
+        apiKey: instanceKey,
+        query: groupJid ? { groupJid } : undefined,
+        body: {
+          ...(directParticipantAction ? { action: directParticipantAction } : {}),
+          ...(directParticipants ? { participants: directParticipants } : {}),
+          ...(payload as object),
+        },
+      },
+      update_group_setting: {
+        method: 'POST',
+        path: `/group/updateSetting/${instance}`,
+        apiKey: instanceKey,
+        query: groupJid ? { groupJid } : undefined,
+        body: {
+          ...(directGroupSetting ? { action: directGroupSetting } : {}),
+          ...(payload as object),
+        },
+      },
+      update_group_subject: {
+        method: 'POST',
+        path: `/group/updateGroupSubject/${instance}`,
+        apiKey: instanceKey,
+        query: groupJid ? { groupJid } : undefined,
+        body: {
+          ...(directSubject ? { subject: directSubject } : {}),
+          ...(payload as object),
+        },
+      },
+      update_group_description: {
+        method: 'POST',
+        path: `/group/updateGroupDescription/${instance}`,
+        apiKey: instanceKey,
+        query: groupJid ? { groupJid } : undefined,
+        body: {
+          ...(directDescription ? { description: directDescription } : {}),
+          ...(payload as object),
+        },
+      },
+      leave_group: {
+        method: 'DELETE',
+        path: `/group/leaveGroup/${instance}`,
+        apiKey: instanceKey,
+        query: groupJid ? { groupJid } : undefined,
+      },
+      configure_webhook: {
+        method: 'POST',
+        path: `/webhook/set/${instance}`,
+        apiKey: instanceKey,
+        body: normalizedPayload,
+      },
+      configure_chatwoot: {
+        method: 'POST',
+        path: `/chatwoot/set/${instance}`,
+        apiKey: instanceKey,
+        body: normalizedPayload,
+      },
+      configure_typebot: {
+        method: 'POST',
+        path: `/typebot/create/${instance}`,
+        apiKey: instanceKey,
+        body: normalizedPayload,
+      },
+    };
+
+    const operation = actionMap[action];
+    if (!operation) {
+      return 'Acao nao suportada para Evolution API v2. Use: create_instance, connect_instance, get_connection_state, send_text, send_media, send_group_text, send_group_media, validate_numbers, create_group, list_groups, get_group_info, get_group_participants, get_group_invite_code, get_group_invite_info, send_group_invite, update_group_participants, update_group_setting, update_group_subject, update_group_description, leave_group, configure_webhook, configure_chatwoot ou configure_typebot.';
+    }
+
+    if (['connect_instance', 'get_connection_state', 'send_text', 'send_media', 'send_group_text', 'send_group_media', 'validate_numbers', 'create_group', 'list_groups', 'get_group_info', 'get_group_participants', 'get_group_invite_code', 'get_group_invite_info', 'send_group_invite', 'update_group_participants', 'update_group_setting', 'update_group_subject', 'update_group_description', 'leave_group', 'configure_webhook', 'configure_chatwoot', 'configure_typebot'].includes(action) && !instance) {
+      return 'Informe a instancia na skill ou salve evolution_instance nas configuracoes.';
+    }
+
+    if (!operation.apiKey) {
+      return action === 'create_instance'
+        ? 'Evolution Global API Key nao configurada.'
+        : 'Evolution Instance API Key nao configurada.';
+    }
+
+    if (action === 'create_instance' && !(operation.body as any)?.instanceName) {
+      return 'Para create_instance, informe instance_name ou payload.instanceName, ou salve evolution_instance nas configuracoes.';
+    }
+
+    if (action === 'send_text') {
+      const body = operation.body as any;
+      if (!body?.number || !body?.text) {
+        return 'Para send_text, informe o numero e o texto da mensagem. Pode usar os campos diretos number/text da skill.';
+      }
+    }
+
+    if (action === 'send_media') {
+      const body = operation.body as any;
+      if (!body?.number || !(body?.media || body?.url)) {
+        return 'Para send_media, informe o numero e a URL da midia. Pode usar os campos diretos number/media_url da skill.';
+      }
+    }
+
+    if (['send_group_text', 'send_group_media', 'get_group_info', 'get_group_participants', 'get_group_invite_code', 'send_group_invite', 'update_group_participants', 'update_group_setting', 'update_group_subject', 'update_group_description', 'leave_group'].includes(action) && !groupJid) {
+      return 'Para esta acao de grupo, informe group_jid no formato ...@g.us.';
+    }
+
+    if (action === 'send_group_text') {
+      const body = operation.body as any;
+      if (!body?.number || !body?.text) {
+        return 'Para send_group_text, informe group_jid e text.';
+      }
+    }
+
+    if (action === 'send_group_media') {
+      const body = operation.body as any;
+      if (!body?.number || !(body?.media || body?.url)) {
+        return 'Para send_group_media, informe group_jid e media_url.';
+      }
+    }
+
+    if (action === 'create_group') {
+      const body = operation.body as any;
+      if (!body?.subject || !Array.isArray(body?.participants) || body.participants.length === 0) {
+        return 'Para create_group, informe subject e participants.';
+      }
+    }
+
+    if (action === 'get_group_invite_info' && !directInviteCode) {
+      return 'Para get_group_invite_info, informe invite_code.';
+    }
+
+    if (action === 'send_group_invite') {
+      const body = operation.body as any;
+      if (!body?.groupJid || !Array.isArray(body?.numbers) || body.numbers.length === 0) {
+        return 'Para send_group_invite, informe group_jid e participants.';
+      }
+    }
+
+    if (action === 'update_group_participants') {
+      const body = operation.body as any;
+      if (!body?.action || !Array.isArray(body?.participants) || body.participants.length === 0) {
+        return 'Para update_group_participants, informe participant_action e participants.';
+      }
+    }
+
+    if (action === 'update_group_setting') {
+      const body = operation.body as any;
+      if (!body?.action) {
+        return 'Para update_group_setting, informe group_setting.';
+      }
+    }
+
+    if (action === 'update_group_subject') {
+      const body = operation.body as any;
+      if (!body?.subject) {
+        return 'Para update_group_subject, informe subject.';
+      }
+    }
+
+    if (action === 'update_group_description') {
+      const body = operation.body as any;
+      if (!body?.description) {
+        return 'Para update_group_description, informe description.';
+      }
+    }
+
+    try {
+      return await runHttpIntegration({
+        baseUrl,
+        path: operation.path,
+        method: operation.method,
+        apiKey: operation.apiKey,
+        body: operation.body,
+        query: operation.query,
+      });
+    } catch (err: any) {
+      if (action === 'create_instance') {
+        const details = String(err.message || '').toLowerCase();
+        if (
+          details.includes('already') ||
+          details.includes('em uso') ||
+          details.includes('already exists') ||
+          details.includes('already in use')
+        ) {
+          const existingName = String((operation.body as any)?.instanceName || instance || defaultInstance || '');
+          return `A instancia "${existingName}" ja existe na Evolution API. Reutilize essa instancia com connect_instance, get_connection_state ou send_text; nao tente criar outro nome automaticamente.`;
+        }
+      }
+      return `Erro na Evolution API v2 (${action}): ${err.message}`;
+    }
+  },
+
+  evogo_api: async (args, ctx) => {
+    const action = String(args.action || '').trim();
+    const baseUrl = String(ctx.credentials.evogo_api_url || '').trim();
+    const globalKey = String(ctx.credentials.evogo_global_key || '').trim();
+    const instanceKey = String(ctx.credentials.evogo_api_key || '').trim();
+    const defaultInstance = String(ctx.credentials.evogo_instance || '').trim();
+    const instance = String(args.instance || defaultInstance || '').trim();
+    const payload = (args.payload && typeof args.payload === 'object') ? args.payload : {};
+    const query = (args.query && typeof args.query === 'object') ? args.query : undefined;
+    const phoneNumber = String(args.phone_number || '').trim();
+
+    if (!baseUrl) return 'evoGo API URL nao configurada.';
+
+    const actionMap: Record<string, { method: 'GET' | 'POST' | 'DELETE'; path: string; apiKey: string; body?: unknown; query?: Record<string, unknown> }> = {
+      create_instance: {
+        method: 'POST',
+        path: '/instance/create',
+        apiKey: globalKey,
+        body: {
+          name: String((payload as any).name || instance || ''),
+          token: String((payload as any).token || instanceKey || ''),
+          qrcode: (payload as any).qrcode ?? true,
+          ...(payload as object),
+        },
+      },
+      connect_instance: {
+        method: 'POST',
+        path: '/instance/connect',
+        apiKey: instanceKey,
+        body: { number: phoneNumber, ...(payload as object) },
+      },
+      get_status: {
+        method: 'GET',
+        path: '/instance/status',
+        apiKey: instanceKey,
+      },
+      send_text: {
+        method: 'POST',
+        path: '/send/text',
+        apiKey: instanceKey,
+        body: payload,
+      },
+      send_media: {
+        method: 'POST',
+        path: '/send/media',
+        apiKey: instanceKey,
+        body: payload,
+      },
+      send_poll: {
+        method: 'POST',
+        path: '/send/poll',
+        apiKey: instanceKey,
+        body: payload,
+      },
+      create_group: {
+        method: 'POST',
+        path: '/group/create',
+        apiKey: instanceKey,
+        body: payload,
+      },
+      list_groups: {
+        method: 'GET',
+        path: '/group/list',
+        apiKey: instanceKey,
+      },
+      check_numbers: {
+        method: 'POST',
+        path: '/user/check',
+        apiKey: instanceKey,
+        body: payload,
+      },
+      get_contacts: {
+        method: 'GET',
+        path: '/user/contacts',
+        apiKey: instanceKey,
+      },
+      set_webhook: {
+        method: 'POST',
+        path: '/webhook/set',
+        apiKey: instanceKey,
+        body: payload,
+      },
+      get_logs: {
+        method: 'GET',
+        path: `/instance/logs/${instance}`,
+        apiKey: globalKey,
+        query: query as Record<string, unknown> | undefined,
+      },
+    };
+
+    const operation = actionMap[action];
+    if (!operation) {
+      return 'Acao nao suportada para evoGo. Use: create_instance, connect_instance, get_status, send_text, send_media, send_poll, create_group, list_groups, check_numbers, get_contacts, set_webhook ou get_logs.';
+    }
+
+    if (action === 'get_logs' && !instance) {
+      return 'Informe a instancia na skill ou salve evogo_instance nas configuracoes para consultar logs.';
+    }
+
+    if (!operation.apiKey) {
+      return action === 'create_instance' || action === 'get_logs'
+        ? 'evoGo Global API Key nao configurada.'
+        : 'evoGo Instance API Key nao configurada.';
+    }
+
+    if (action === 'create_instance') {
+      const body = operation.body as any;
+      if (!body?.name) return 'Para create_instance, informe payload.name ou salve evogo_instance nas configuracoes.';
+      if (!body?.token) return 'Para create_instance, informe payload.token ou salve evogo_api_key nas configuracoes.';
+    }
+
+    try {
+      return await runHttpIntegration({
+        baseUrl,
+        path: operation.path,
+        method: operation.method as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+        apiKey: operation.apiKey,
+        body: operation.body,
+        query: operation.query,
+      });
+    } catch (err: any) {
+      return `Erro na evoGo API (${action}): ${err.message}`;
+    }
+  },
+
   weather_check: async (args, ctx) => {
     const location = String(args.location || '').trim();
     const units = args.units === 'imperial' ? 'fahrenheit' : 'celsius';

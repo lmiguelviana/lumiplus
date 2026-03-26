@@ -18,6 +18,7 @@ const SECRET_KEYS = [
   'instagram_user_id',
   'imgbb_api_key',
   'meta_app_secret',
+  'meta_access_token',
   'custom_ai_providers',
   'nvidia_nim_key',       // NVIDIA NIM / Kimi K2.5
   'email_pass',           // Senha de e-mail / App Password (IMAP+SMTP)
@@ -27,6 +28,10 @@ const SECRET_KEYS = [
   'trello_api_key',       // Trello API
   'trello_token',         // Trello Token
   'stripe_secret_key',    // Stripe Secret Key
+  'evolution_global_key', // Evolution API v2 admin key
+  'evolution_api_key',    // Evolution API v2 instance key
+  'evogo_global_key',     // evoGo admin key
+  'evogo_api_key',        // evoGo instance key
 ];
 
 export async function settingsRoutes(app: FastifyInstance) {
